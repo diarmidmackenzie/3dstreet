@@ -149,7 +149,13 @@ export const FALLBACK_FORWARD_DIST = 30;
 // changes the base step size. Separate knob from the orbit-pivot bounds
 // (different origin: camera nadir vs screen-centre ground point).
 // Live-tunable via nav-experimental-tuning (wheelZoomLateralCapMetres).
-export const WHEEL_ZOOM_LATERAL_CAP_METRES = 15; // 10–25 expected; feel
+// Lowered 15 → 1 (feel-test 2026-06-05): at 15 the shallow-tilt zoom ran
+// much faster than the no-hit (sky) fallback — `0.1 × FALLBACK_FORWARD_DIST`
+// = 3 m/tick — so crossing the horizon felt like a speed step. A 1 m cap
+// brings the shallow-tilt lateral travel into line with the sky fallback's
+// feel. Only the HORIZONTAL component is capped, so straight-down plan-view
+// zoom (horizontal ≈ 0) is unaffected and stays fast.
+export const WHEEL_ZOOM_LATERAL_CAP_METRES = 1; // feel-tested 2026-06-05
 
 // TASK-014d: per-caller far-ground reach ceiling for the wheel-zoom path.
 // Far above any real scene (1000 km) but well short of float overflow, so
