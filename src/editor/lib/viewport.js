@@ -1,15 +1,17 @@
-/* eslint-disable no-unused-vars */
-import TransformControls from './TransformControls.js';
+import { TransformControls } from './TransformControls.js';
+// eslint-disable-next-line no-unused-vars
 import EditorControls from './EditorControls.js';
 import { MeasureLineControls } from './MeasureLineControls.js';
 import InfiniteGridHelper from './InfiniteGridHelper.js';
 import {
   ExperimentalControls,
-  isExperimentalNav
+  isExperimentalNav,
+  isStreetLevelNav
 } from './nav-experimental/index.js';
 
 import { copyCameraPosition } from './cameras';
 import { initRaycaster } from './raycaster';
+import { captureNavDiscovery } from './navAnalytics.js';
 import Events from './Events';
 import useStore from '@/store';
 // variables used by OrientedBoxHelper
@@ -256,9 +258,11 @@ export function Viewport(inspector) {
     // cursor intersection navigateDoubleClick classifies off (NOT the
     // segment-remapped getIntersectedEl). So hovering a car-in-lane shows the
     // car (Category C) and a pixel aside shows the lane (Category A), matching
-    // WE-7 by construction.
+    // WE-7 by construction. The teleport ships with ?streetview=on
+    // (raycaster.js gates the dblclick reroute the same way), so the preview
+    // follows the same flag — at parity, hover matches legacy selection.
     let target = el;
-    if (isExperimentalNav()) {
+    if (isExperimentalNav() && isStreetLevelNav()) {
       const cursorComp =
         inspector.cursor && inspector.cursor.components
           ? inspector.cursor.components.cursor
@@ -295,41 +299,49 @@ export function Viewport(inspector) {
   }
 
   const camera = inspector.camera;
-  const transformControls = new THREE.TransformControls(
-    camera,
-    inspector.container
-  );
+  const transformControls = new TransformControls(camera, inspector.container);
   transformControls.size = 0.75;
 
-  const measureLineControls = new THREE.MeasureLineControls(
+  const measureLineControls = new MeasureLineControls(
     camera,
     inspector.container
   );
   measureLineControls.visible = false;
   measureLineControls.enabled = true;
 
-  // Function to switch between controls based on entity type
-  const switchControls = (entity) => {
-    if (!entity) {
-      transformControls.detach();
-      measureLineControls.detach();
-      return;
-    }
+  // Pose snapshot taken on the gizmo's mouseDown, BEFORE TransformControls
+  // mutates the object. The undo command can't capture this itself:
+  // getAttribute('position') returns the live object3D values, which are
+  // already post-mutation by the time objectChange fires (#1663).
+  let transformPreDragValues = null;
 
-    const object = entity.object3D;
-    if (entity.components['measure-line']) {
-      transformControls.detach();
-      measureLineControls.attach(entity);
-    } else {
-      measureLineControls.detach();
-      transformControls.attach(object);
-    }
-  };
-
-  transformControls.addEventListener('objectChange', (evt) => {
+  transformControls.addEventListener('objectChange', () => {
     const object = transformControls.object;
     if (object === undefined) {
       return;
+    }
+
+    const mode = transformControls.mode;
+
+    // Trim to 3 decimals.
+    if (mode === 'translate') {
+      object.position.set(
+        parseFloat(object.position.x.toFixed(3)),
+        parseFloat(object.position.y.toFixed(3)),
+        parseFloat(object.position.z.toFixed(3))
+      );
+    } else if (mode === 'rotate') {
+      object.rotation.set(
+        parseFloat(object.rotation.x.toFixed(3)),
+        parseFloat(object.rotation.y.toFixed(3)),
+        parseFloat(object.rotation.z.toFixed(3))
+      );
+    } else if (mode === 'scale') {
+      object.scale.set(
+        parseFloat(object.scale.x.toFixed(3)),
+        parseFloat(object.scale.y.toFixed(3)),
+        parseFloat(object.scale.z.toFixed(3))
+      );
     }
 
     selectionBox.setFromObject(object);
@@ -339,16 +351,16 @@ export function Viewport(inspector) {
     // Emit update event for watcher.
     let component;
     let value;
-    if (evt.mode === 'translate') {
+    if (mode === 'translate') {
       component = 'position';
       value = `${object.position.x} ${object.position.y} ${object.position.z}`;
-    } else if (evt.mode === 'rotate') {
+    } else if (mode === 'rotate') {
       component = 'rotation';
       const d = THREE.MathUtils.radToDeg;
       value = `${d(object.rotation.x)} ${d(object.rotation.y)} ${d(
         object.rotation.z
       )}`;
-    } else if (evt.mode === 'scale') {
+    } else if (mode === 'scale') {
       component = 'scale';
       value = `${object.scale.x} ${object.scale.y} ${object.scale.z}`;
     }
@@ -356,11 +368,23 @@ export function Viewport(inspector) {
     inspector.execute('entityupdate', {
       component: component,
       entity: transformControls.object.el,
-      value: value
+      value: value,
+      oldValue: transformPreDragValues?.[component]
     });
   });
 
   transformControls.addEventListener('mouseDown', () => {
+    const object = transformControls.object;
+    if (object) {
+      const d = THREE.MathUtils.radToDeg;
+      transformPreDragValues = {
+        position: `${object.position.x} ${object.position.y} ${object.position.z}`,
+        rotation: `${d(object.rotation.x)} ${d(object.rotation.y)} ${d(
+          object.rotation.z
+        )}`,
+        scale: `${object.scale.x} ${object.scale.y} ${object.scale.z}`
+      };
+    }
     controls.enabled = false;
     hoverBox.visible = false; // if we start to move a group with a child hovered at the same time
   });
@@ -399,7 +423,7 @@ export function Viewport(inspector) {
     });
   });
 
-  sceneHelpers.add(transformControls);
+  sceneHelpers.add(transformControls.getHelper());
   sceneHelpers.add(measureLineControls);
 
   Events.on('entityupdate', (detail) => {
@@ -429,7 +453,6 @@ export function Viewport(inspector) {
   controls.zoomSpeed = 0.05;
   controls.setAspectRatio(sceneEl.canvas.width / sceneEl.canvas.height);
   controls.addEventListener('change', () => {
-    transformControls.update(true); // true is updateScale
     Events.emit('camerachanged');
   });
 
@@ -456,7 +479,7 @@ export function Viewport(inspector) {
       if (perspective) {
         sceneEl.camera = perspective;
         inspector.camera = perspective;
-        transformControls.setCamera(perspective);
+        transformControls.camera = perspective;
         measureLineControls.camera = perspective;
         controls.setCamera(perspective);
         updateAspectRatio();
@@ -465,20 +488,20 @@ export function Viewport(inspector) {
       }
     }
     controls.setCamera(data.camera);
-    transformControls.setCamera(data.camera);
+    transformControls.camera = data.camera;
     measureLineControls.camera = data.camera;
     updateAspectRatio();
   });
 
   function disableControls() {
     mouseCursor.disable();
-    transformControls.dispose();
+    transformControls.enabled = false;
     controls.enabled = false;
   }
 
   function enableControls() {
     mouseCursor.enable();
-    transformControls.activate();
+    transformControls.enabled = true;
     controls.enabled = true;
   }
   enableControls();
@@ -489,6 +512,16 @@ export function Viewport(inspector) {
 
   Events.on('transformmodechange', (mode) => {
     transformControls.setMode(mode);
+    // Restrict rotation to the Y axis only.
+    if (mode === 'rotate') {
+      transformControls.showX = false;
+      transformControls.showY = true;
+      transformControls.showZ = false;
+    } else {
+      transformControls.showX = true;
+      transformControls.showY = true;
+      transformControls.showZ = true;
+    }
 
     // If there's a selected entity, reattach the appropriate controls
     if (
@@ -559,6 +592,9 @@ export function Viewport(inspector) {
   });
 
   Events.on('objectfocus', (object) => {
+    // Feature-discovery: count the first focus-on-entity (double-click,
+    // F-key, or sidebar focus button all route through this event).
+    captureNavDiscovery('focus');
     controls.focus(object);
   });
 
@@ -578,7 +614,6 @@ export function Viewport(inspector) {
 
   Events.on('entityupdate', (detail) => {
     const object = detail.entity.object3D;
-    transformControls.update();
     if (object instanceof THREE.PerspectiveCamera) {
       object.updateProjectionMatrix();
     }

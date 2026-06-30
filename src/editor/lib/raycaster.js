@@ -1,5 +1,9 @@
 import Events from './Events';
-import { isExperimentalNav } from './nav-experimental/flag.js';
+import {
+  isExperimentalNav,
+  isStreetLevelNav
+} from './nav-experimental/flag.js';
+import { captureNavDiscovery } from './navAnalytics.js';
 
 export function initRaycaster(inspector) {
   // Use cursor="rayOrigin: mouse".
@@ -82,7 +86,11 @@ export function initRaycaster(inspector) {
   function handleClick(evt) {
     // Check to make sure not dragging.
     if (onDownPosition.distanceTo(onUpPosition) === 0) {
-      inspector.selectEntity(getIntersectedEl());
+      const intersectedEl = getIntersectedEl();
+      // Feature-discovery: count a viewport click that actually selects an
+      // entity (a click on empty space deselects — not a "select").
+      if (intersectedEl) captureNavDiscovery('select');
+      inspector.selectEntity(intersectedEl);
       // Force the cursor component to trigger again an intersection to show hover box on the original intersected el inside the street-segment.
       mouseCursor.components.cursor.clearCurrentIntersection(false);
     }
@@ -125,9 +133,13 @@ export function initRaycaster(inspector) {
    * intersect when the flag is on. Flag-off keeps the legacy objectfocus path.
    * Only this canvas dblclick reroutes — F-key / scene-tree / sidebar
    * objectfocus callers still run the legacy frame-this-entity animation.
+   *
+   * The teleport ships with the street-level featureset (?streetview=on);
+   * gated off, double-click keeps the legacy frame-the-entity behaviour
+   * (deploy-at-parity).
    */
   function onDoubleClick(event) {
-    if (isExperimentalNav()) {
+    if (isExperimentalNav() && isStreetLevelNav()) {
       Events.emit('nav-experimental:doubleclick', {
         clientX: event.clientX,
         clientY: event.clientY

@@ -41,6 +41,7 @@
 //   - dispose()
 
 import './navTuningComponent.js';
+import { isStreetLevelNav, isWasdNav } from './flag.js';
 import { ModifierState } from './modifierState.js';
 import { GestureLatch } from './gestureLatch.js';
 import { SceneBounds } from './sceneBounds.js';
@@ -69,6 +70,7 @@ import {
   TILT_THRESHOLD_DEFAULT_DEGREES,
   MIN_ORBIT_RADIUS_METRES,
   MAP_PIVOT_BOUNDS_RADIUS_METRES,
+  MAP_PIVOT_FAR_ACCEPT_GAIN,
   WHEEL_ZOOM_LATERAL_CAP_LOWER_BOUND_METRES,
   WHEEL_ZOOM_LATERAL_CAP_AGL_COEFF,
   WHEEL_GROUND_REACH_CEILING_METRES,
@@ -137,9 +139,24 @@ import {
   pullBackTowardTarget,
   elevationState
 } from './navMath.js';
+import { captureNavDiscovery } from '../navAnalytics.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
+
+// The held-key movement set (WASD + arrows). Shared by the keydown
+// movement branch, the keyup release path, and the WASD ↔ rotation
+// interplay edge detection.
+const MOVEMENT_KEY_CODES = new Set([
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight'
+]);
 
 // CR-D5: bounded-fallback cadence (ms) for the idle-gated enclosure probe.
 // While the camera is stationary and no scene-geometry-dirty signal fired,
@@ -260,6 +277,11 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // the tuning component.
     this._mapPivotBoundsRadius = MAP_PIVOT_BOUNDS_RADIUS_METRES;
 
+    // Street-level-mode-OFF far-acceptance budget for a clicked Map rotation
+    // pivot (see the constant). Live value, overridable via the tuning
+    // component (mapPivotFarAcceptGain → setMapPivotFarAcceptGain).
+    this._mapPivotFarAcceptGain = MAP_PIVOT_FAR_ACCEPT_GAIN;
+
     // TASK-014d / TASK-027 Part F: lower bound on the per-tick wheel-zoom
     // lateral cap. The live cap is `max(lowerBound, 0.1×AGL)` (navMath.
     // lateralCap), so it scales with height; this lower bound governs near the
@@ -269,11 +291,31 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     this._wheelZoomLateralCapLowerBound =
       WHEEL_ZOOM_LATERAL_CAP_LOWER_BOUND_METRES;
 
+    // Street-level mode gate. OFF (the ?streetview=on default) disables the
+    // street-level regime as a whole: the wheel never dispatches to the
+    // swoop / street-FOV phases (it stays a plain anchored dolly at every
+    // height, like Ctrl+wheel), the context button offers no street action,
+    // the 'drop' discoverability cue is suppressed, and a lane double-click
+    // no-ops. Elevated nav, drone rise, and the enclosure (daylight)
+    // recovery are unaffected. Live value, flippable at runtime via the
+    // tuning component (streetLevelEnabled → setStreetLevelEnabled).
+    this._streetLevelEnabled = isStreetLevelNav();
+
+    // First-person kit gate (?wasd=on, default off): WASD / arrow-key
+    // flight and the WASD ↔ rotation interplay (which rides on the
+    // held-key set, so it gates for free). Live value, flippable via the
+    // tuning component (wasdEnabled → setWasdEnabled).
+    this._wasdEnabled = isWasdNav();
+
     // TASK-010 (live-Shift, B6): last-known cursor coords, tracked on
     // mousedown and every mousemove so a mid-drag Shift toggle can
     // re-latch the sub-gesture at the current cursor position.
     this._lastClientX = null;
     this._lastClientY = null;
+
+    // Which mouse button latched the current gesture (0 = LB, 2 = RMB).
+    // The mid-drag Shift mode-switch applies to LB drags only.
+    this._gestureButton = null;
 
     this._pointer = new THREE.Vector2();
     this._pointerOld = new THREE.Vector2();
@@ -694,6 +736,7 @@ export class ExperimentalControls extends THREE.EventDispatcher {
 
   zoomInStart() {
     if (this._disabledByOrtho) return;
+    captureNavDiscovery('zoom');
     this._zoomInInterval = setInterval(() => this._zoomActionBar(-1), 50);
   }
   zoomInStop() {
@@ -702,11 +745,25 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   }
   zoomOutStart() {
     if (this._disabledByOrtho) return;
+    captureNavDiscovery('zoom');
     this._zoomOutInterval = setInterval(() => this._zoomActionBar(1), 50);
   }
   zoomOutStop() {
     clearInterval(this._zoomOutInterval);
     this._zoomOutInterval = null;
+  }
+
+  // LB sub-mode from the live tilt. Street-level mode off (Stage 1): a
+  // single screen-space pan ('pan-screen') at every tilt — the legacy
+  // THREE.EditorControls LB behaviour. The tilt-gated truck/pedestal split
+  // (and the letterbox indicator driven off it) is the Stage 2 street mode
+  // and only engages when street-level is enabled. See
+  // docs/07-phased-rollout-plan.md §"the seam". The single decision point
+  // for all three callers (the mode cache, the mode-change emitter, and the
+  // pan gesture latch).
+  _decideLbModeLive() {
+    if (!this._streetLevelEnabled) return 'pan-screen';
+    return decideLbMode(cameraTiltDegrees(this._camera), this._tiltThreshold);
   }
 
   // Phase 2: read the cached LB sub-mode for the visual indicator. The
@@ -715,10 +772,7 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   // recompute if the cache is empty so the first read is always honest.
   getCurrentLbMode() {
     if (this._currentLbMode == null && this._camera) {
-      this._currentLbMode = decideLbMode(
-        cameraTiltDegrees(this._camera),
-        this._tiltThreshold
-      );
+      this._currentLbMode = this._decideLbModeLive();
     }
     return this._currentLbMode;
   }
@@ -744,6 +798,14 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     this._mapPivotBoundsRadius = THREE.MathUtils.clamp(metres, 1, 100000);
   }
 
+  // Street-level-mode-OFF far-acceptance budget for a clicked Map rotation
+  // pivot: gain on the height/sin(max(tilt,T)) budget (see the constant).
+  // Relayed from the tuning component (mapPivotFarAcceptGain).
+  setMapPivotFarAcceptGain(gain) {
+    if (typeof gain !== 'number' || !isFinite(gain) || gain <= 0) return;
+    this._mapPivotFarAcceptGain = THREE.MathUtils.clamp(gain, 0.05, 100);
+  }
+
   // TASK-014d / TASK-027 Part F: live-tunable LOWER BOUND of the wheel-zoom
   // lateral cap (metres). The live cap is `max(lowerBound, 0.1×AGL)`. Relayed
   // from the tuning component (wheelZoomLateralCapLowerBoundMetres).
@@ -752,6 +814,31 @@ export class ExperimentalControls extends THREE.EventDispatcher {
       return;
     }
     this._wheelZoomLateralCapLowerBound = metres;
+  }
+
+  // Street-level mode gate (see the constructor field for what it covers).
+  // Relayed from the tuning component (streetLevelEnabled); the URL flag
+  // (?streetview=on) sets the default.
+  setStreetLevelEnabled(enabled) {
+    if (typeof enabled !== 'boolean') return;
+    this._streetLevelEnabled = enabled;
+    // Flipping the gate can change the LB sub-mode comparator at a fixed
+    // tilt (pedestal ↔ truck) — re-emit so the letterbox updates without
+    // waiting for the next interaction (same reasoning as setTiltThreshold).
+    this._maybeEmitLbModeChange();
+  }
+
+  // First-person kit gate (see the constructor field). Relayed from the
+  // tuning component (wasdEnabled); the ?wasd=on URL flag sets the default.
+  // Note the shortcuts.js w/s/d keymap restore reads the URL flag at load
+  // time only — this runtime toggle moves the camera bindings, not the
+  // editor shortcut map.
+  setWasdEnabled(enabled) {
+    if (typeof enabled !== 'boolean') return;
+    this._wasdEnabled = enabled;
+    // Flipped off mid-flight: drop any held movement keys so the camera
+    // doesn't keep flying on keys whose keyups will now be ignored.
+    if (!enabled) this._heldKeys.clear();
   }
 
   // TASK-010 (D-LT-3 / #6): live-tunable Shift+LB rotation speed
@@ -956,7 +1043,13 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // to a spin in place on its own — no dedicated top-down case needed.
     // (TASK-026: this replaces a call to a never-implemented
     // _screenCenterHit() that threw on every non-top-down click.)
-    const isMap = cameraTiltDegrees(camera) > this._tiltThreshold;
+    // Street-level mode off: always the Map turn (orbit the screen-centre
+    // ground point). At/above the horizon that point is null and the code
+    // below already falls through to spin-in-place — the one pose where
+    // there is no ground feature to pivot.
+    const isMap =
+      !this._streetLevelEnabled ||
+      cameraTiltDegrees(camera) > this._tiltThreshold;
     let pivot = null;
     if (isMap) {
       // Screen-centre ground point = where the camera's view ray meets
@@ -1270,10 +1363,7 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   // Plan-View / focus-animation onDone callbacks.
   _maybeEmitLbModeChange() {
     if (!this._camera) return;
-    const next = decideLbMode(
-      cameraTiltDegrees(this._camera),
-      this._tiltThreshold
-    );
+    const next = this._decideLbModeLive();
     if (next !== this._currentLbMode) {
       this._currentLbMode = next;
       this._emitModeChange(next);
@@ -1284,6 +1374,12 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   // Phase 2 splits the 'pan' branch further at gesture-start time via
   // `decideLbMode(cameraTiltDegrees(camera))`.
   _decideMouseMode(event) {
+    // RMB = rotate, identical to Shift+LB — legacy-EditorControls parity
+    // (its mapping was LB pan / MMB zoom / RMB rotate; the canvas context
+    // menu is suppressed). Unlike LB, an RMB drag never mode-switches on
+    // Shift (see the `_gestureButton` guard in `_syncDragModeToShift`),
+    // matching the legacy controls' LB-only Shift toggle.
+    if (event.button === 2) return 'rotate';
     if (event.button !== 0) return null;
     if (event.shiftKey) return 'rotate';
     return 'pan';
@@ -1347,6 +1443,11 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // before the gesture latches.
     this._maybeEmitLbModeChange();
 
+    // Remember which button latched the gesture: the mid-drag Shift
+    // mode-switch applies to LB drags only (legacy parity — an RMB rotate
+    // must not flip to pan when Shift is up; see `_syncDragModeToShift`).
+    this._gestureButton = event.button;
+
     if (mode === 'pan') {
       this._beginPanSubGesture(event.clientX, event.clientY);
     } else if (mode === 'rotate') {
@@ -1378,13 +1479,28 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // ring left visible by the rotate — otherwise it leaks on the stale
     // pivot for the rest of the drag (it only marks a Map-rotate pivot).
     this._indicator.hide();
-    const subMode = decideLbMode(
-      cameraTiltDegrees(this._camera),
-      this._tiltThreshold
-    );
+    const subMode = this._decideLbModeLive();
     const anchor = this._cursorAnchor.worldPointAt(clientX, clientY);
 
-    if (subMode === 'pan-truck') {
+    if (subMode === 'pan-screen') {
+      // Stage 1 screen-space pan: plane through the anchor whose normal is
+      // the camera-facing direction (i.e. parallel to the image plane).
+      // Translating the camera within this plane keeps the anchor under the
+      // cursor and moves purely in the camera's right/up basis — the legacy
+      // ⊥-to-camera pan. The plane is latched at gesture start (the pan
+      // never rotates the camera, so it stays parallel to the image plane).
+      const fwd = new THREE.Vector3();
+      this._camera.getWorldDirection(fwd);
+      if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
+      fwd.normalize();
+      const planeAnchor = new THREE.Vector3(anchor.x, anchor.y, anchor.z);
+      this._anchorPlane.setFromNormalAndCoplanarPoint(fwd, planeAnchor);
+      this._latch.start({
+        mode: 'pan',
+        subMode,
+        anchor: planeAnchor
+      });
+    } else if (subMode === 'pan-truck') {
       this._anchorPlane.set(
         new THREE.Vector3(0, 1, 0),
         -anchor.y // signed dist; plane equation y = anchor.y
@@ -1445,13 +1561,19 @@ export class ExperimentalControls extends THREE.EventDispatcher {
 
     const mode = this._latch.get('mode');
     if (mode === 'pan') {
+      // Feature-discovery: count the first real pan drag (here, not at
+      // mousedown, so a click that never moves doesn't register as a pan).
+      captureNavDiscovery('pan');
       const subMode = this._latch.get('subMode');
-      if (subMode === 'pan-pedestal') {
+      if (subMode === 'pan-screen') {
+        this._lbScreenPan(event.clientX, event.clientY);
+      } else if (subMode === 'pan-pedestal') {
         this._lbPedestalMove(event.clientX, event.clientY);
       } else {
         this._lbTruckMove(event.clientX, event.clientY);
       }
     } else if (mode === 'rotate') {
+      captureNavDiscovery('rotate');
       this._shiftRotate(dx, dy);
       // Emit LB-mode change the moment the tilt crosses T mid-gesture,
       // not at gesture end (letterbox is live; see plan §4b).
@@ -1460,6 +1582,7 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   }
 
   _onMouseUp() {
+    this._gestureButton = null;
     let endedMode = null;
     if (this._latch.isActive()) {
       // TASK-024 (N1): capture the gesture `mode` BEFORE `_latch.end()`,
@@ -1571,7 +1694,10 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // downward `hits` already pass through any enclosing building's roof +
     // floor). Opt-in (`checkBuried`) so existing recovery callers, which pass
     // no opts, are byte-identical.
-    if (opts.checkBuried && this._pointInsideBuildingHit(p, hits, opts.extraBox)) {
+    if (
+      opts.checkBuried &&
+      this._pointInsideBuildingHit(p, hits, opts.extraBox)
+    ) {
       return false;
     }
     return true;
@@ -1752,6 +1878,8 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     }
 
     // (2) Classify by owning-entity identity → category. D (no hit) → no-op.
+    // (Street-level mode off: raycaster.js routes canvas double-clicks to the
+    // legacy objectfocus instead, so this path only runs with the mode on.)
     const category = classifyDoubleClick(classifyHitEntity(hit));
     if (category === 'D') return;
 
@@ -1796,9 +1924,13 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // camera; the per-column cap is applied in the clearance step below. A void
     // below the camera (no floor) → no downward reference → no cap.
     const currentCamY = camera.position.y;
-    const curFloor = this._collisionFloorAt(camera.position.x, camera.position.z, {
-      refreshCache: false
-    });
+    const curFloor = this._collisionFloorAt(
+      camera.position.x,
+      camera.position.z,
+      {
+        refreshCache: false
+      }
+    );
     const currentAGL =
       curFloor.source === 'cache'
         ? Infinity
@@ -1956,7 +2088,15 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   // it needs no mid-tween hand-off). The teleport is a committed motion: only
   // its endpoint is validated; the path is not per-frame collision-clamped.
   // Returns the TickAnimator handle. `_tweenToPose` is left untouched.
-  _easeToPose({ position, quaternion, fromFov, toFov, durationMs, onTick, onDone }) {
+  _easeToPose({
+    position,
+    quaternion,
+    fromFov,
+    toFov,
+    durationMs,
+    onTick,
+    onDone
+  }) {
     const camera = this._camera;
     const startPos = camera.position.clone();
     const startQuat = camera.quaternion.clone();
@@ -2119,6 +2259,9 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     if (this._isInactive() || this._tweenOwnsCamera()) return;
     event.preventDefault();
 
+    // Feature-discovery: first wheel zoom this session.
+    captureNavDiscovery('zoom');
+
     // TASK-014a (#6 Option B): accumulate only — apply no motion here (the
     // drain owns motion + recovery suppression, exactly as before). Normalise
     // the event to a signed fractional "nominal tick" count (deltaMode-aware,
@@ -2176,6 +2319,9 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   // deliberate switch regardless of focus (decision D-R1-5).
   _syncDragModeToShift(shiftHeld) {
     if (this._isInactive() || !this._latch.isActive()) return; // only mid-drag
+    // LB drags only: an RMB rotate is Shift-independent (legacy parity —
+    // EditorControls' Shift toggle applied to `event.buttons === 1` only).
+    if (this._gestureButton !== 0) return;
     const desired = decideDragModeSwitch(this._latch.get('mode'), shiftHeld);
     if (desired === null) return; // already in the desired mode
     if (desired === 'rotate') {
@@ -2220,16 +2366,16 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // editor shortcuts (translate-mode, scale-mode, clone-entity) were
     // remapped to T/L/C in shortcuts.js on 2026-05-09 so WASD is free
     // for camera movement.
-    if (
-      k === 'KeyW' ||
-      k === 'KeyA' ||
-      k === 'KeyS' ||
-      k === 'KeyD' ||
-      k === 'ArrowUp' ||
-      k === 'ArrowDown' ||
-      k === 'ArrowLeft' ||
-      k === 'ArrowRight'
-    ) {
+    // First-person kit off: movement keys are NOT claimed — no
+    // preventDefault, no held-key tracking — so w/s/d fall through to the
+    // legacy editor shortcuts that shortcuts.js keeps live in that mode.
+    if (this._wasdEnabled && MOVEMENT_KEY_CODES.has(k)) {
+      // Interplay: ENTERING WASD mode (first movement key down from idle)
+      // ends an in-progress rotation gesture. Edge-detected on the empty
+      // set so auto-repeat keydowns and additional movement keys do NOT
+      // end a rotation started while already moving — only the WASD-mode
+      // boundary does (the matching exit edge lives in `_onKeyUp`).
+      if (this._heldKeys.size === 0) this._endRotationGestureForWasd();
       this._heldKeys.add(k);
       // Prevent the browser from scrolling the page (arrow keys) or
       // shifting focus in scrollable panels while driving the camera.
@@ -2290,6 +2436,13 @@ export class ExperimentalControls extends THREE.EventDispatcher {
       enabled =
         s.topOverhead != null && s.topOverhead + EYE_MARGIN_METRES > camY;
     } else if (s.elevationState === 'elevated') {
+      // Street-level mode off: there is no street action to offer from an
+      // elevated pose. 'none' hides the button entirely (ContextViewButton
+      // renders nothing for it) and `triggerContextAction` / Space no-op.
+      if (!this._streetLevelEnabled) {
+        this._lastResolvedKind = 'none';
+        return { kind: 'none', enabled: false, busy: false };
+      }
       // Street view. Enabled mirrors `_swoopToStreet` EXACTLY (R4): it swoops to
       // the camera-centre look-at when tilted past T, else drops vertically to
       // the floor below. So it has a target — and the button is enabled — when
@@ -2342,6 +2495,7 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   // down+forward translation + the tilt slerp gives the forward-and-down swoop
   // arc to the spot you were looking at — "drop the pegman where I am looking".
   _swoopToStreet() {
+    if (!this._streetLevelEnabled) return; // gated upstream; belt-and-braces
     const cam = this._camera;
     const P = this._centerRayGroundHit();
     // Discriminate the two street-view cases by HOW STEEPLY you are looking down
@@ -2698,7 +2852,31 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // TASK-010 (B6): symmetric with `_onKeyDown` — same first-line sync.
     this._syncDragModeToShift(event.shiftKey);
     const k = event.code;
-    if (this._heldKeys.has(k)) this._heldKeys.delete(k);
+    const wasHeld = this._heldKeys.has(k);
+    if (wasHeld) this._heldKeys.delete(k);
+    // Interplay: releasing a held movement key ends an in-progress
+    // rotation gesture — functionally equivalent to Shift-up / button-up,
+    // even though the user may keep dragging. `_heldKeys` only ever holds
+    // movement codes, so `wasHeld` doubles as the movement-key test (and
+    // excludes keyups whose keydown was swallowed by a typing target).
+    if (wasHeld) this._endRotationGestureForWasd();
+  }
+
+  // WASD ↔ rotation interplay: entering WASD mode (first movement key
+  // down) or releasing any held movement key ends an in-progress rotation
+  // gesture (Shift+LB or RMB — both latch mode 'rotate'). The latch ends
+  // NOW — the still-held button keeps the window listeners until mouseup,
+  // but every subsequent move no-ops and the Shift sync can't re-latch
+  // (both gate on an active latch) — so rotating again requires a fresh
+  // click / Shift press. Pan gestures are left alone (only rotation is
+  // specced to yield to WASD).
+  _endRotationGestureForWasd() {
+    if (!this._latch.isActive()) return;
+    if (this._latch.get('mode') !== 'rotate') return;
+    this._latch.end();
+    this._emitModeChange(null);
+    this._indicator.hide();
+    this._maybeEmitLbModeChange();
   }
 
   _isTypingTarget(target) {
@@ -2824,9 +3002,14 @@ export class ExperimentalControls extends THREE.EventDispatcher {
       }
     }
     // Discoverability cue (D7): keyed off height above the collision floor
-    // below, with show/hide hysteresis; enclosure forces show.
+    // below, with show/hide hysteresis; enclosure forces show. Street-level
+    // mode off: the 'drop' cue advertises the gated street action (Space),
+    // so only the enclosure cue may show — the gate feeds the shown state
+    // (not just the emit) so `_cueShown` keeps tracking what is displayed.
     const agl = probe.floorY != null ? camY - probe.floorY : 0;
-    const nextShown = cueState(this._cueShown, agl, probe.enclosed);
+    const nextShown =
+      cueState(this._cueShown, agl, probe.enclosed) &&
+      (probe.enclosed || this._streetLevelEnabled);
     if (nextShown !== this._cueShown) {
       this._cueShown = nextShown;
       if (nextShown) {
@@ -3283,6 +3466,14 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // Ctrl+wheel (incl. Mac trackpad pinch) bypasses the swoop — plain
     // camera-Z dolly at the current tilt/elevation (Open Decision #2).
     if (this._lastWheelCtrlKey) return 'lowtilt';
+    // Street-level mode off: never dispatch to the swoop (phase 2) or the
+    // street FOV zoom (phase 3) — the wheel is a plain anchored dolly at
+    // every height, the same behaviour Ctrl+wheel gives with the mode on.
+    if (!this._streetLevelEnabled) {
+      return cameraTiltDegrees(camera) <= this._tiltThreshold
+        ? 'lowtilt'
+        : 'high';
+    }
     // TASK-024a (solid-geometry guard): no ground below → no swoop floor to
     // land on. Plain anchored dolly at the current tilt, never Phase 2/3.
     if (!this._frameGroundHit) {
@@ -3438,8 +3629,14 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     // hand the remainder to the swoop. TASK-014d: Ctrl+wheel is the swoop
     // BYPASS escape hatch — a plain cursor dolly at the current tilt that may
     // descend past AGL 20 without entering the swoop, so skip the boundary when
-    // Ctrl is held.
-    if (sign < 0 && this._frameGroundHit && !this._lastWheelCtrlKey) {
+    // Ctrl is held. Street-level mode off: same bypass — there is no swoop to
+    // hand off to, so the dolly descends freely.
+    if (
+      sign < 0 &&
+      this._frameGroundHit &&
+      !this._lastWheelCtrlKey &&
+      this._streetLevelEnabled
+    ) {
       const denom = camera.position.y - hit.y;
       const targetY = groundY + yEntry;
       // Would the full step land below the entry boundary?
@@ -3571,6 +3768,7 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     const groundY = this._frameGroundY;
     if (
       sign < 0 &&
+      this._streetLevelEnabled && // mode off: no Phase-2 boundary to clamp at
       camera.position.y - groundY < SWOOP_PHASE2_ENTRY_ELEVATION_METRES
     ) {
       camera.position.y = groundY + SWOOP_PHASE2_ENTRY_ELEVATION_METRES;
@@ -4188,6 +4386,53 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     return { hit: false };
   }
 
+  // --- LB screen-space pan (Stage 1 parity-plus) ---
+  //
+  // The legacy THREE.EditorControls LB behaviour, restored: one continuous
+  // pan in the camera's own right/up basis with no tilt-gated mode switch.
+  // The drag is anchored on a plane through the cursor's world point whose
+  // normal is the camera-facing direction (parallel to the image plane), so
+  // the world point under the cursor stays under the cursor. Because that
+  // plane tilts with the camera, the same gesture slides across the ground
+  // when looking down and pedestals straight up when looking at the horizon
+  // — one behaviour that degrades gracefully across tilt (see
+  // docs/07-phased-rollout-plan.md). No floor clamp / grounding (Stage 2
+  // machinery): matching legacy, dragging up always lifts back out.
+  _lbScreenPan(clientX, clientY) {
+    const camera = this._camera;
+    const anchor = this._latch.get('anchor');
+    if (!anchor) return;
+
+    const rect = this._domElement.getBoundingClientRect();
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this._tmpNDC.set(ndcX, ndcY);
+    this._raycaster.setFromCamera(this._tmpNDC, camera);
+
+    const hNow = new THREE.Vector3();
+    const ok = this._raycaster.ray.intersectPlane(this._anchorPlane, hNow);
+    if (!ok) return; // ray parallel to plane — no-op
+
+    // Both points are coplanar with the image plane, so `delta` has no
+    // camera-forward component: the camera translates purely in its
+    // right/up basis and the anchor's screen projection is preserved.
+    const delta = new THREE.Vector3().subVectors(anchor, hNow);
+    if (!isFinite(delta.x) || !isFinite(delta.y) || !isFinite(delta.z)) return;
+
+    // Sanity cap to avoid teleports from a degenerate plane solution.
+    const stepMag = delta.length();
+    const cap = LB_PAN_MAX_STEP_METRES;
+    if (stepMag > cap) delta.multiplyScalar(cap / stepMag);
+
+    camera.position.add(delta);
+    this.center.add(delta);
+    // TASK-022: clear on ACTUAL movement only — a jitter drag that nets ~0
+    // on the latched plane must NOT clear (WE-6).
+    if (delta.x || delta.y || delta.z) this._clearZoomUndo();
+    camera.updateMatrixWorld();
+    this.dispatchEvent(this._changeEvent);
+  }
+
   // --- LB hit-anchored truck ---
 
   _lbTruckMove(clientX, clientY) {
@@ -4351,10 +4596,27 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   // so mid-drag the two can disagree by design (see plan §4b / worked
   // examples 3 & 4). Do NOT wire the ring off live tilt.
   _latchRotationCenter(camera, clientX, clientY) {
+    // Street-level mode off: the Street rotate-in-place regime never
+    // engages — rotation is always the Map orbit. At/above the horizon
+    // `_mapModePivot`'s defensive fallback (a bounds-radius-ahead ground
+    // point) takes over, since the screen-centre ground point is null there.
     const tiltDeg = cameraTiltDegrees(camera);
-    const isMap = tiltDeg > this._tiltThreshold;
+    const isMap = !this._streetLevelEnabled || tiltDeg > this._tiltThreshold;
+    // Stage 1 (street-level off): rotate about the SCREEN-CENTRE collision
+    // point, not the cursor. Cursor-anchored orbit is deferred to Stage 2
+    // (07-phased-rollout-plan.md). We still use the new collision raycast
+    // (mesh → ground via `worldPointAt`) and still show the ring — it is
+    // just fired through the screen centre instead of the pointer. With
+    // street-level on, the cursor pivot (Stage 2) is used as before.
+    let pivotX = clientX;
+    let pivotY = clientY;
+    if (!this._streetLevelEnabled) {
+      const rect = this._domElement.getBoundingClientRect();
+      pivotX = rect.left + rect.width / 2;
+      pivotY = rect.top + rect.height / 2;
+    }
     const center = isMap
-      ? this._mapModePivot(clientX, clientY) // bounds sphere + D-LT-3 fallback
+      ? this._mapModePivot(pivotX, pivotY) // bounds sphere + D-LT-3 fallback
       : camera.position.clone(); // street: rotate-in-place
     this._latch.start({
       mode: 'rotate',
@@ -4387,6 +4649,11 @@ export class ExperimentalControls extends THREE.EventDispatcher {
   // level rather than y=0 — that is TASK-018, gated on the AGL work in
   // TASK-013/019, not yet landed.)
   //
+  // NOTE: `_latchRotationCenter` passes the SCREEN-CENTRE coords here when
+  // street-level mode is off (Stage 1 rotate-about-centre), so "the cursor"
+  // in the comments below is the screen centre in that path; the cursor-
+  // anchored pivot only applies with street-level on (Stage 2).
+  //
   // History: replaced (a) the MAX_ORBIT_RADIUS inward cap along the
   // cursor ray, which drifted on tilt when zoomed out (#7); and (b) a
   // fixed-distance point straight ahead, which sat off the ground and
@@ -4401,15 +4668,70 @@ export class ExperimentalControls extends THREE.EventDispatcher {
     this._camera.getWorldDirection(fwd); // unit view direction
     // Screen-centre ground point: bounds centre AND fallback pivot.
     const sc = this._viewRayGroundPoint(camPos, fwd);
+    // Street-level mode off: Map rotation runs at EVERY tilt, and at shallow
+    // tilt sc races toward the horizon — orbiting that far point (or a far
+    // accepted hit) from a low camera is a violent swing, which then trips
+    // gesture-end recovery (read as a position jump on mouseup). Two guards,
+    // both computed with the tilt FLOORED at the threshold T ("as if looking
+    // down at least T-steep"), so with tilt ≥ T and a near click this path
+    // is identical to the unguarded one:
+    //   • fallbackCentre — sc recomputed at the floored tilt: identical to
+    //     sc while tilt ≥ T; at shallower tilt it stays a NEAR ground point
+    //     ahead (height/tan(T) ≈ 2.1×height at the default T) instead of
+    //     the horizon point.
+    //   • maxHitDist — a cursor hit becomes the pivot only if it is within
+    //     gain × height/sin(max(tilt, T)) of the camera; a farther click
+    //     REJECTS to the centre pivot, exactly like a sky click. It is NOT
+    //     pulled in along the cursor ray — that inward pull-in is the drift
+    //     the old MAX_ORBIT_RADIUS cap was removed for (history note (a)
+    //     above) and it re-tested as bad here. Near top-down the budget is
+    //     gain × height, so any visible click passes.
+    // Every pivot stays ON THE GROUND (this module's design value, see the
+    // doc comment). Skipped at/below the ground plane (camY <= 0 is
+    // degenerate recovery territory) and with street-level mode on, where
+    // tilt > T bounds the geometry by construction (parity rule).
+    let fallbackCentre = sc;
+    let maxHitDist = Infinity;
+    if (!this._streetLevelEnabled && camPos.y > 0) {
+      const tEffRad = THREE.MathUtils.degToRad(
+        Math.max(cameraTiltDegrees(this._camera), this._tiltThreshold)
+      );
+      maxHitDist = (camPos.y / Math.sin(tEffRad)) * this._mapPivotFarAcceptGain;
+      const fwdH = Math.hypot(fwd.x, fwd.z);
+      // fwdH ~ 0 = looking straight down; sc is already the nadir point.
+      if (fwdH > 1e-6) {
+        const ahead = camPos.y / Math.tan(tEffRad);
+        fallbackCentre = new THREE.Vector3(
+          camPos.x + (fwd.x / fwdH) * ahead,
+          0,
+          camPos.z + (fwd.z / fwdH) * ahead
+        );
+      }
+    }
     const hit = this._cursorAnchor.worldPointAt(clientX, clientY);
-    let p = sc;
-    if (sc && hit.source !== 'fallback') {
+    let p = fallbackCentre;
+    if (hit.source !== 'fallback') {
       // Cursor hit a mesh OR the ground plane: orbit it if it lies within
       // the bounds radius of the screen-centre point (horizontal ground
-      // distance).
+      // distance). Street-level mode off: ALSO accept a hit within the
+      // radius of the CAMERA (horizontal). Map rotation now runs at every
+      // tilt, and at shallow tilt sc races to the horizon — the sc-centred
+      // test then rejects every nearby ground click (the cursor pivot
+      // stops registering and rotation pins to the horizon point). The
+      // camera-centred test is gated so the tuned Map-mode bounds are
+      // unchanged with the street regime on (where tilt > T keeps sc near
+      // the view centre by construction).
       const candidate = new THREE.Vector3(hit.x, hit.y, hit.z);
-      const groundDist = Math.hypot(candidate.x - sc.x, candidate.z - sc.z);
-      if (groundDist <= this._mapPivotBoundsRadius) {
+      const fromSc = sc
+        ? Math.hypot(candidate.x - sc.x, candidate.z - sc.z)
+        : Infinity;
+      const fromCam = this._streetLevelEnabled
+        ? Infinity
+        : Math.hypot(candidate.x - camPos.x, candidate.z - camPos.z);
+      if (
+        Math.min(fromSc, fromCam) <= this._mapPivotBoundsRadius &&
+        candidate.distanceTo(camPos) <= maxHitDist
+      ) {
         p = candidate;
       }
     }

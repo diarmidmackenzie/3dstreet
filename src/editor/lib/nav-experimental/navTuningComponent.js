@@ -22,11 +22,16 @@
 import {
   TILT_THRESHOLD_DEFAULT_DEGREES,
   MAP_PIVOT_BOUNDS_RADIUS_METRES,
+  MAP_PIVOT_FAR_ACCEPT_GAIN,
   ROTATION_SPEED_RAD_PER_PX,
   WHEEL_ZOOM_LATERAL_CAP_LOWER_BOUND_METRES
 } from './constants.js';
+import { isStreetLevelNav, isWasdNav } from './flag.js';
 
-if (typeof AFRAME !== 'undefined' && !AFRAME.components['nav-experimental-tuning']) {
+if (
+  typeof AFRAME !== 'undefined' &&
+  !AFRAME.components['nav-experimental-tuning']
+) {
   AFRAME.registerComponent('nav-experimental-tuning', {
     // Schema defaults imported from the constants so the component and the
     // constants can't drift.
@@ -39,6 +44,14 @@ if (typeof AFRAME !== 'undefined' && !AFRAME.components['nav-experimental-tuning
         type: 'number',
         default: MAP_PIVOT_BOUNDS_RADIUS_METRES
       },
+      // Street-level-mode-OFF only: far-acceptance budget for a clicked Map
+      // rotation pivot — accept within gain × height/sin(max(tilt, T)) of
+      // the camera, farther clicks orbit the centre point instead. Larger =
+      // accept farther pivots at a given tilt.
+      mapPivotFarAcceptGain: {
+        type: 'number',
+        default: MAP_PIVOT_FAR_ACCEPT_GAIN
+      },
       rotationSpeedRadPerPx: {
         type: 'number',
         default: ROTATION_SPEED_RAD_PER_PX
@@ -49,6 +62,22 @@ if (typeof AFRAME !== 'undefined' && !AFRAME.components['nav-experimental-tuning
       wheelZoomLateralCapLowerBoundMetres: {
         type: 'number',
         default: WHEEL_ZOOM_LATERAL_CAP_LOWER_BOUND_METRES
+      },
+      // Street-level mode gate (swoop / street FOV / street button action /
+      // lane double-click). Default comes from the ?streetview=on URL flag
+      // (off without it); flip live via
+      // `sceneEl.setAttribute('nav-experimental-tuning','streetLevelEnabled',true)`.
+      streetLevelEnabled: {
+        type: 'boolean',
+        default: isStreetLevelNav()
+      },
+      // First-person kit gate (WASD/arrow flight + rotation interplay).
+      // Default comes from the ?wasd=on URL flag. NOTE: the runtime toggle
+      // moves only the camera bindings — the shortcuts.js w/s/d keymap
+      // restore is decided once at load from the URL flag.
+      wasdEnabled: {
+        type: 'boolean',
+        default: isWasdNav()
       }
     },
     update() {
@@ -65,11 +94,20 @@ if (typeof AFRAME !== 'undefined' && !AFRAME.components['nav-experimental-tuning
       if (typeof c.setMapPivotBoundsRadius === 'function') {
         c.setMapPivotBoundsRadius(this.data.mapPivotBoundsRadiusMetres);
       }
+      if (typeof c.setMapPivotFarAcceptGain === 'function') {
+        c.setMapPivotFarAcceptGain(this.data.mapPivotFarAcceptGain);
+      }
       if (typeof c.setRotationSpeed === 'function') {
         c.setRotationSpeed(this.data.rotationSpeedRadPerPx);
       }
       if (typeof c.setWheelZoomLateralCap === 'function') {
         c.setWheelZoomLateralCap(this.data.wheelZoomLateralCapLowerBoundMetres);
+      }
+      if (typeof c.setStreetLevelEnabled === 'function') {
+        c.setStreetLevelEnabled(this.data.streetLevelEnabled);
+      }
+      if (typeof c.setWasdEnabled === 'function') {
+        c.setWasdEnabled(this.data.wasdEnabled);
       }
     }
   });
