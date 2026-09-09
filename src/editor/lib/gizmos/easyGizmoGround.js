@@ -1,0 +1,255 @@
+// What the easy gizmo counts as ground, which surface in a column supports an
+// object, and whether a frame's travel crossed anything discontinuous.
+//
+// THIS IS PLACEMENT'S DEFINITION OF GROUND, AND IT IS DELIBERATELY WIDER THAN
+// THE CAMERA'S BY ONE BRANCH. The navigation system's floor predicate is an
+// allowlist of three kinds — street segments, catalog-known buildings and
+// Google 3D Tiles — and its coverage boundary (a non-catalog glTF reads as
+// scatter, so the camera can sink through it) is an accepted one for camera
+// collision. It is not acceptable for placement: a user who imports a building
+// and drags a bollard at it expects the bollard to rest on it.
+//
+// The nav predicate is NOT widened. It decides where the camera may stand, and
+// it is read by the descent clamp, the orbit pivot, the swoop, WASD flight and
+// the enclosure sensor — so widening it would move camera collision for every
+// user whether or not this gizmo exists. Instead the fourth branch is added
+// here, in a wrapper this subsystem owns, over the same classifier. Nav's
+// predicate and its documented key decision about catalog-gated solidity remain
+// true of navigation and are unchanged.
+//
+// Nothing in this module raycasts. It decides over a hit list it is handed and
+// over sampled heights, which is what makes the rules here directly testable.
+
+import {
+  classifyHitEntity,
+  isSolidFloorHit,
+  owningEntity
+} from '../nav-experimental/cursorAnchor.js';
+import { continuityAllowance } from './easyGizmoMath.js';
+import { SUBSTEP_METRES } from './easyGizmoConstants.js';
+
+/** Heights within this of the base are treated as level with it. */
+const SPLIT_EPSILON = 1e-3;
+
+/**
+ * A surface the user imported themselves.
+ *
+ * The upload path stamps persistent identity attributes on every asset it
+ * places, so this is a fourth POSITIVE branch rather than a polarity flip:
+ * anything matching no branch is still rejected.
+ *
+ * It additionally requires a `gltf-model`, which the markers alone do not
+ * imply. They are applied to uploaded images and splats too, and neither is a
+ * surface anyone means to stand a bollard on — an uploaded logo becomes a flat
+ * plane, which lying over a road would swallow the road's footprint. Stated as
+ * a rule rather than a list of the upload path's current kinds: it admits
+ * imported geometry and excludes imported decals, whatever gets added next.
+ */
+export function isUserImportedMeshHit(hit) {
+  if (!hit || !hit.object) return false;
+  const el = owningEntity(hit.object);
+  if (!el || typeof el.hasAttribute !== 'function') return false;
+  if (!el.hasAttribute('gltf-model')) return false;
+  return (
+    el.hasAttribute('data-asset-id') || el.hasAttribute('data-temporary-file')
+  );
+}
+
+/** The gizmo's ground predicate: the three navigation branches, plus imports. */
+export function isGizmoGroundHit(hit) {
+  return isSolidFloorHit(hit) || isUserImportedMeshHit(hit);
+}
+
+/**
+ * The class a qualifying hit belongs to, for the precedence rule below.
+ * User imports rank with segments and buildings rather than with tiles.
+ */
+export function groundHitClass(hit) {
+  const kind = classifyHitEntity(hit);
+  if (kind === 'tiles') return 'tiles';
+  return 'solid';
+}
+
+/**
+ * The support BELOW a reference height, out of hits already filtered to ground.
+ *
+ * NOT simply nearest-wins. A segment, building or user import beats a tiles hit
+ * whether or not the tiles hit is nearer; within a class the nearest wins. This
+ * is the precedence the camera's own floor pick applies, and carrying it across
+ * is what stops the gizmo resting an object on the photogrammetric drape while
+ * navigation stands the camera on the street underneath it — a permanent
+ * disagreement of the drape's thickness, invisible in any scene that does not
+ * carry both surfaces in one column.
+ */
+export function pickSupportBelow(hits, refY) {
+  let best = null;
+  for (let i = 0; i < hits.length; i++) {
+    const hit = hits[i];
+    const y = hit.point.y;
+    if (y > refY + SPLIT_EPSILON) continue;
+    const cls = groundHitClass(hit);
+    if (
+      best === null ||
+      (cls === 'solid' && best.cls === 'tiles') ||
+      (cls === best.cls && y > best.y)
+    ) {
+      best = { y, cls, hit, entity: owningEntity(hit.object) };
+    }
+  }
+  return best;
+}
+
+/**
+ * The nearest qualifying surface ABOVE a reference height.
+ *
+ * NEAREST WINS, WITH NO CLASS PREFERENCE, and the asymmetry with the downward
+ * rule is the whole point. The tiles skin drapes OVER real geometry, so looking
+ * down the nearest hit is systematically the drape rather than the road it
+ * covers. Looking up from an object's base that bias is absent and inverts: a
+ * photogrammetric roof three metres overhead is the real surface, and a
+ * building slab forty metres up — a tower floor, an overpass deck — is not the
+ * surface anyone would name.
+ */
+export function pickSurfaceAbove(hits, refY) {
+  let best = null;
+  for (let i = 0; i < hits.length; i++) {
+    const hit = hits[i];
+    const y = hit.point.y;
+    if (y <= refY + SPLIT_EPSILON) continue;
+    if (best === null || y < best.y) {
+      best = {
+        y,
+        cls: groundHitClass(hit),
+        hit,
+        entity: owningEntity(hit.object)
+      };
+    }
+  }
+  return best;
+}
+
+/**
+ * Split an already-filtered hit list about a different reference height.
+ *
+ * A translate frame probes the destination column about the base the object
+ * had BEFORE it moved, then moves it — so the surfaces the user should see
+ * offered as landing targets have to be re-split about the new base. Doing it
+ * from the hit list the endpoint probe already produced is what keeps the frame
+ * at one endpoint ray instead of two.
+ */
+export function resplitColumn(hits, refY) {
+  return {
+    below: pickSupportBelow(hits, refY),
+    above: pickSurfaceAbove(hits, refY)
+  };
+}
+
+function supportHeightOf(column) {
+  if (column === null || column === undefined) return null;
+  if (typeof column === 'number') return column;
+  return column.below ? column.below.y : null;
+}
+
+/**
+ * Is the ground under this frame's travel continuous with the object's current
+ * support, and where does that support end up?
+ *
+ * `probeAt(x, z)` is the injected column probe, which is what keeps this module
+ * free of raycasting and lets the evaluator be driven with a stub. `from` and
+ * `to` are `{ x, z }`; `fromSupportY` seeds the comparison.
+ *
+ * THE COMPARISON IS PAIRWISE AND THE REFERENCE ADVANCES. Each consecutive pair
+ * of samples is judged against the allowance for its own sub-span, and an
+ * accepted sample becomes the reference for the next one — so a frame's total
+ * climb is unbounded in the number of sub-steps, which is what keeps a ramp
+ * followable at any drag speed. Comparing every sample against the frame's
+ * starting support instead caps the followable rise at one step per FRAME,
+ * making the effective followable angle a function of drag speed and camera
+ * distance.
+ *
+ * A FRAME IS ALL OR NOTHING. If any pair fails, the object holds its height and
+ * the remembered support does not move at all — partial credit for the samples
+ * before the failure would be a level assignment by another name.
+ *
+ * A PROBE MISS HOLDS the reference rather than clearing it. The safe failure
+ * here is to leave the object where it is; the camera's own probe answers the
+ * opposite question and treats a miss as "no floor" for the opposite reason.
+ */
+export function evaluatePath({
+  from,
+  to,
+  fromSupportY,
+  probeAt,
+  budget,
+  substep = SUBSTEP_METRES
+}) {
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const d = Math.hypot(dx, dz);
+  const n = Math.max(1, Math.ceil(d / substep));
+  const demanded = n - 1;
+  const overBudget = demanded > budget;
+
+  if (overBudget) {
+    // The outcome is fixed before the first ray, so casting into it buys
+    // nothing. Declaring the frame discontinuous holds height, which can
+    // withhold a step but can never invent a leap.
+    return {
+      continuous: false,
+      supportY: fromSupportY,
+      samples: [],
+      demanded,
+      cast: 0,
+      overBudget: true,
+      endColumn: null
+    };
+  }
+
+  const samples = [];
+  for (let k = 1; k <= demanded; k++) {
+    const u = (k * substep) / d;
+    samples.push({ x: from.x + dx * u, z: from.z + dz * u });
+  }
+
+  let reference = fromSupportY;
+  let prev = from;
+  let endColumn = null;
+  const stops = samples.concat([to]);
+  for (let i = 0; i < stops.length; i++) {
+    const at = stops[i];
+    const column = probeAt(at.x, at.z);
+    if (i === stops.length - 1) endColumn = column;
+    const y = supportHeightOf(column);
+    if (y === null) {
+      prev = at;
+      continue;
+    }
+    const subSpan = Math.hypot(at.x - prev.x, at.z - prev.z);
+    if (
+      reference !== null &&
+      Math.abs(y - reference) > continuityAllowance(subSpan)
+    ) {
+      return {
+        continuous: false,
+        supportY: fromSupportY,
+        samples,
+        demanded,
+        cast: demanded,
+        overBudget: false,
+        endColumn
+      };
+    }
+    reference = y;
+    prev = at;
+  }
+
+  return {
+    continuous: true,
+    supportY: reference,
+    samples,
+    demanded,
+    cast: demanded,
+    overBudget: false,
+    endColumn
+  };
+}
