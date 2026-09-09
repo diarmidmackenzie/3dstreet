@@ -255,6 +255,18 @@ class EasyGizmoControls extends GizmoPointerControls {
     this._bindHandlers();
     this._build();
     this._debug = this._readDebugFlag();
+    /**
+     * Runtime switch for path evaluation, so the same gesture can be driven
+     * with it and without it.
+     *
+     * Every frame that fails to follow the ground produces the same
+     * observation — the object held its height — whether the sampler found a
+     * discontinuity or there was nothing to find. Turning the sampler off
+     * leaves only the endpoint probe, which is a build with no path evaluation
+     * at all, so a drive that passes with it on and fails with it off has shown
+     * the mechanism did the work. Set it from the console.
+     */
+    this.pathEvaluationEnabled = true;
 
     this._onEntityUpdate = () => {
       if (this.el && !this.isDragging) this._refreshSupport();
@@ -2088,7 +2100,10 @@ class EasyGizmoControls extends GizmoPointerControls {
       to: target,
       fromSupportY: this.dragSupportY,
       probeAt: this._probeAt,
-      budget: PATH_PROBE_BUDGET
+      // Zero interior samples is the endpoint-only build, which is what the
+      // paired negative of a drive needs.
+      budget: this.pathEvaluationEnabled ? PATH_PROBE_BUDGET : 0,
+      substep: this.pathEvaluationEnabled ? undefined : Infinity
     });
 
     let newY = startY;
