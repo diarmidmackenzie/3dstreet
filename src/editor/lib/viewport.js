@@ -4,9 +4,7 @@ import EditorControls from './EditorControls.js';
 import { ShapeVertexControls } from './ShapeVertexControls.js';
 import { StreetNodeControls } from './gizmos/StreetNodeControls.js';
 import { SegmentWidthControls } from './gizmos/SegmentWidthControls.js';
-import { EasyGizmoControls } from './gizmos/EasyGizmoControls.js';
 import { isEasyGizmo } from './gizmos/easyGizmoFlag.js';
-import { easyGizmoCommandName } from './gizmos/easyGizmoMessages.js';
 import InfiniteGridHelper from './InfiniteGridHelper.js';
 import {
   ExperimentalControls,
@@ -461,13 +459,15 @@ export function Viewport(inspector) {
   inspector.streetNodeControls = streetNodeControls;
   inspector.segmentWidthControls = segmentWidthControls;
 
-  // Easy mode: one combined move/rotate handle that follows the ground. Behind
-  // a flag, constructed once, and mutually exclusive with nothing — it is the
-  // stock gizmo's alternative for a transform mode, not an additive handle.
-  const easyGizmoControls = isEasyGizmo()
-    ? new EasyGizmoControls(camera, inspector.container, sceneEl)
-    : null;
-  if (easyGizmoControls) inspector.easyGizmoControls = easyGizmoControls;
+  // Easy mode: one combined move/rotate handle that follows the ground. It is
+  // the stock gizmo's alternative for a transform mode, not an additive handle.
+  //
+  // LOADED AS ITS OWN CHUNK, and that is a size decision rather than a
+  // stylistic one: the core bundle is held to a hard 4 MiB budget that the
+  // build treats as an error, the whole subsystem is unreachable without the
+  // flag, and an async chunk is outside the budget by design. The helicopter
+  // flight model is split for exactly this reason.
+  let easyGizmoControls = null;
   // The app's transform mode, tracked here because `'easy'` deliberately never
   // reaches TransformControls.setMode() — see the transformmodechange handler.
   let transformMode = 'translate';
@@ -603,7 +603,7 @@ export function Viewport(inspector) {
     });
   });
 
-  if (easyGizmoControls) {
+  function wireEasyGizmo(easyGizmoCommandName) {
     easyGizmoControls.addEventListener('mouseDown', () => {
       controls.enabled = false;
       hoverBox.visible = false;
@@ -652,7 +652,26 @@ export function Viewport(inspector) {
   sceneHelpers.add(shapeVertexControls);
   sceneHelpers.add(streetNodeControls);
   sceneHelpers.add(segmentWidthControls);
-  if (easyGizmoControls) sceneHelpers.add(easyGizmoControls);
+  if (isEasyGizmo()) {
+    Promise.all([
+      import('./gizmos/EasyGizmoControls.js'),
+      import('./gizmos/easyGizmoMessages.js')
+    ]).then(([{ EasyGizmoControls }, { easyGizmoCommandName }]) => {
+      easyGizmoControls = new EasyGizmoControls(
+        camera,
+        inspector.container,
+        sceneEl
+      );
+      inspector.easyGizmoControls = easyGizmoControls;
+      wireEasyGizmo(easyGizmoCommandName);
+      sceneHelpers.add(easyGizmoControls);
+      // The chunk can land after a selection has already been made, so the
+      // router runs again rather than waiting for the next one.
+      if (transformMode === 'easy' && inspector.selectedEntity) {
+        attachControlsForSelection();
+      }
+    });
+  }
 
   Events.on('entityupdate', (detail) => {
     const object = detail.entity.object3D;
@@ -799,7 +818,7 @@ export function Viewport(inspector) {
       return;
     }
     if (easyGizmoControls && transformMode === 'easy') {
-      if (EasyGizmoControls.accepts(el)) {
+      if (easyGizmoControls.accepts(el)) {
         easyGizmoControls.attach(el);
       } else {
         // Where the easy gizmo declines — an individual lane of a managed

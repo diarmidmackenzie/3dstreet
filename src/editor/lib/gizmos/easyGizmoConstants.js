@@ -275,8 +275,7 @@ export const ARC_STEP_DEG = ARC_HALF_SWEEP_DEG / ARC_TUBULAR_SEGMENTS;
  * not a multiple of the step parks each arm where its tail cannot reach, and
  * leaves a notch dead centre of the arrow.
  */
-export const ARC_FLAT_SWEEP_DEG =
-  Math.round(30 / ARC_STEP_DEG) * ARC_STEP_DEG;
+export const ARC_FLAT_SWEEP_DEG = Math.round(30 / ARC_STEP_DEG) * ARC_STEP_DEG;
 
 /** Hit region as a multiple of the drawn tube's width — a tube's width of slack
  * either side, because the drawn tube is about 3 px across. */

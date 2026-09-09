@@ -17,7 +17,14 @@ import {
   CameraReset24Icon
 } from '@shared/icons';
 import { useShapeDrawTool } from './ShapeDrawAction.jsx';
+import { TransformModeMenu } from './TransformModeMenu.jsx';
+import { isEasyGizmo } from '../../../lib/gizmos/easyGizmoFlag.js';
 import { commonMessages } from '@/editor/i18n/commonMessages';
+
+// Read at module eval, like the shortcut map's own flags: the flag is decided
+// at load, and freezing it here keeps the bar's markup identical to today's
+// while it is off.
+const easyGizmo = isEasyGizmo();
 
 const ActionBar = ({ selectedEntity }) => {
   const intl = useIntl();
@@ -93,34 +100,44 @@ const ActionBar = ({ selectedEntity }) => {
       >
         <AwesomeIcon icon={faHand} />
       </Button>
-      <Button
-        variant="toolbtn"
-        className={classNames({
-          [styles.active]: transformMode === 'translate',
-          [styles.inapplicable]: selectionNotTransformable
-        })}
-        onClick={() => changeTransformMode('translate')}
-        title={intl.formatMessage({
-          id: 'actionBar.translateTool',
-          defaultMessage: 'Translate Tool (w) - Select and move objects'
-        })}
-      >
-        <Translate24Icon />
-      </Button>
-      <Button
-        variant="toolbtn"
-        className={classNames({
-          [styles.active]: transformMode === 'rotate',
-          [styles.inapplicable]: selectionNotTransformable
-        })}
-        onClick={() => changeTransformMode('rotate')}
-        title={intl.formatMessage({
-          id: 'actionBar.rotateTool',
-          defaultMessage: 'Rotate Tool (e) - Select and rotate objects'
-        })}
-      >
-        <Rotate24Icon />
-      </Button>
+      {easyGizmo ? (
+        <TransformModeMenu
+          transformMode={transformMode}
+          changeTransformMode={changeTransformMode}
+          inapplicable={selectionNotTransformable}
+        />
+      ) : (
+        <>
+          <Button
+            variant="toolbtn"
+            className={classNames({
+              [styles.active]: transformMode === 'translate',
+              [styles.inapplicable]: selectionNotTransformable
+            })}
+            onClick={() => changeTransformMode('translate')}
+            title={intl.formatMessage({
+              id: 'actionBar.translateTool',
+              defaultMessage: 'Translate Tool (t) - Select and move objects'
+            })}
+          >
+            <Translate24Icon />
+          </Button>
+          <Button
+            variant="toolbtn"
+            className={classNames({
+              [styles.active]: transformMode === 'rotate',
+              [styles.inapplicable]: selectionNotTransformable
+            })}
+            onClick={() => changeTransformMode('rotate')}
+            title={intl.formatMessage({
+              id: 'actionBar.rotateTool',
+              defaultMessage: 'Rotate Tool (e) - Select and rotate objects'
+            })}
+          >
+            <Rotate24Icon />
+          </Button>
+        </>
+      )}
       <Button
         variant="toolbtn"
         className={classNames({

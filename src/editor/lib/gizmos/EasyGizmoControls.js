@@ -581,7 +581,7 @@ class EasyGizmoControls extends GizmoPointerControls {
   /** Does this gizmo take the entity at all? Where it declines, the router
    * falls back to the stock gizmo rather than leaving the selection with
    * nothing. */
-  static accepts(el) {
+  accepts(el) {
     if (!el || !el.object3D) return false;
     if (el.hasAttribute('data-no-transform')) return false;
     if (el.classList && el.classList.contains('street-parent')) return false;
@@ -600,7 +600,7 @@ class EasyGizmoControls extends GizmoPointerControls {
 
   attach(el) {
     if (!el || !el.object3D) return this;
-    if (!EasyGizmoControls.accepts(el)) return this;
+    if (!this.accepts(el)) return this;
     this.el = el;
     // Both are required: nothing here resolves hover or accepts a press with
     // either unset.
@@ -691,9 +691,7 @@ class EasyGizmoControls extends GizmoPointerControls {
 
   _canvas() {
     if (typeof AFRAME === 'undefined') return this.domElement || null;
-    return (
-      AFRAME.INSPECTOR?.container ?? AFRAME.scenes?.[0]?.canvas ?? null
-    );
+    return AFRAME.INSPECTOR?.container ?? AFRAME.scenes?.[0]?.canvas ?? null;
   }
 
   _inspectorOpen() {
@@ -877,13 +875,19 @@ class EasyGizmoControls extends GizmoPointerControls {
     if (svc && typeof svc._hitTest === 'function') {
       if (svc._hitTest(event.clientX, event.clientY)) return true;
     }
-    const peers = [inspector.streetNodeControls, inspector.segmentWidthControls];
+    const peers = [
+      inspector.streetNodeControls,
+      inspector.segmentWidthControls
+    ];
     for (let i = 0; i < peers.length; i++) {
       const peer = peers[i];
       if (!peer || !peer.visible || !peer.object || !peer.enabled) continue;
       this.updateMouse(event);
       const pickers = peer.getPickers();
-      if (pickers.length && this.raycaster.intersectObjects(pickers, true).length) {
+      if (
+        pickers.length &&
+        this.raycaster.intersectObjects(pickers, true).length
+      ) {
         return true;
       }
     }
@@ -1079,8 +1083,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     [this.landingDownGroup, this.landingUpGroup].forEach((group) => {
       const own = group.userData.gizmoAxis;
       const engaged =
-        own === axis ||
-        (this._landingPress && this._landingPress.axis === own);
+        own === axis || (this._landingPress && this._landingPress.axis === own);
       const base = engaged
         ? OPACITY_ACTION
         : someActive
@@ -1295,7 +1298,8 @@ class EasyGizmoControls extends GizmoPointerControls {
     anim.startMs = now;
     // Proportional, so reversing part way across travels only the remaining
     // distance rather than spending the full duration on it.
-    anim.endMs = now + Math.max(1, this.animDurationMs * Math.abs(to - anim.from));
+    anim.endMs =
+      now + Math.max(1, this.animDurationMs * Math.abs(to - anim.from));
   }
 
   /**
@@ -1491,7 +1495,11 @@ class EasyGizmoControls extends GizmoPointerControls {
       const alongZ = i >= 2;
       const sign = i % 2 === 0 ? 1 : -1;
       const reach = (alongZ ? halfZ : halfX) + headLen / 2;
-      head.position.set(alongZ ? 0 : sign * reach, 0, alongZ ? sign * reach : 0);
+      head.position.set(
+        alongZ ? 0 : sign * reach,
+        0,
+        alongZ ? sign * reach : 0
+      );
       head.scale.set(headBase, headLen, 1);
       aimArrowhead(head, head.userData.dir, _hd);
       // The ±X pair fades out where movement is restricted to left and right:
@@ -1616,7 +1624,10 @@ class EasyGizmoControls extends GizmoPointerControls {
     }
     if (this._dodgeRelease) {
       const r = this._dodgeRelease;
-      const p = Math.min(Math.max((now - r.startMs) / (r.endMs - r.startMs), 0), 1);
+      const p = Math.min(
+        Math.max((now - r.startMs) / (r.endMs - r.startMs), 0),
+        1
+      );
       const ease = this.animEasing || easeInOutCubic;
       this._dodge = {
         flipArc: live.flipArc,
@@ -1744,7 +1755,7 @@ class EasyGizmoControls extends GizmoPointerControls {
       ud.slideFrom = null;
     }
     const phase = engaged
-      ? (((now - ud.slideFrom) % CHEVRON_CYCLE_MS) / CHEVRON_CYCLE_MS)
+      ? ((now - ud.slideFrom) % CHEVRON_CYCLE_MS) / CHEVRON_CYCLE_MS
       : 0;
 
     // The plane each chevron stands in: vertical, with its normal on the
@@ -1808,7 +1819,8 @@ class EasyGizmoControls extends GizmoPointerControls {
     this._dodgeHeld = null;
 
     if (this._isLandingAxis(axis)) {
-      const targetY = axis === 'landingUp' ? this.landingUpY : this.landingDownY;
+      const targetY =
+        axis === 'landingUp' ? this.landingUpY : this.landingDownY;
       if (targetY === null) {
         this.dragSnapshot = null;
         return false;

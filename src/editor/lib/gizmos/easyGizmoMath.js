@@ -113,8 +113,10 @@ export function computeDodge({ S, gapBelow, gapAbove, latches }) {
   const near = ARC_NEAR_FRAC * S;
   const clear = STRIP_HALF_FRAC * S;
   const leave = 1 + DODGE_HYSTERESIS_FRAC;
-  const below = gapBelow === null || gapBelow === undefined ? Infinity : gapBelow;
-  const above = gapAbove === null || gapAbove === undefined ? Infinity : gapAbove;
+  const below =
+    gapBelow === null || gapBelow === undefined ? Infinity : gapBelow;
+  const above =
+    gapAbove === null || gapAbove === undefined ? Infinity : gapAbove;
   const prev = latches || {};
 
   const next = {
@@ -130,8 +132,18 @@ export function computeDodge({ S, gapBelow, gapAbove, latches }) {
       reach * leave,
       prev.aboveInReach ?? null
     ),
-    belowNear: latchByHysteresis(below, near, near * leave, prev.belowNear ?? null),
-    aboveNear: latchByHysteresis(above, near, near * leave, prev.aboveNear ?? null)
+    belowNear: latchByHysteresis(
+      below,
+      near,
+      near * leave,
+      prev.belowNear ?? null
+    ),
+    aboveNear: latchByHysteresis(
+      above,
+      near,
+      near * leave,
+      prev.aboveNear ?? null
+    )
   };
 
   // Rule 1 protects the ARC, which reaches 0.47 S from the base, so it is keyed
