@@ -1,0 +1,758 @@
+/* global THREE */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EasyGizmoControls } from '@/editor/lib/gizmos/EasyGizmoControls.js';
+import { evaluatePath } from '@/editor/lib/gizmos/easyGizmoGround.js';
+import { _internals as cursorInternals } from '@/editor/lib/nav-experimental/cursorAnchor.js';
+import {
+  IDLE_PROBE_INTERVAL_MS,
+  HORIZON_CAP_METRES,
+  OPACITY_ACTION,
+  OPACITY_REST
+} from '@/editor/lib/gizmos/easyGizmoConstants.js';
+
+const fixtures = [];
+afterEach(() => {
+  fixtures.splice(0).forEach((f) => f.controls.dispose());
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  document.body.replaceChildren();
+});
+
+function fixture({ base = 0, cameraY = 10 } = {}) {
+  const canvas = document.createElement('canvas');
+  document.body.append(canvas);
+  canvas.getBoundingClientRect = () => ({
+    width: 1200,
+    height: 800,
+    left: 0,
+    top: 0
+  });
+  Object.defineProperty(canvas, 'clientHeight', { value: 800 });
+  const inspector = { opened: true, container: canvas };
+  vi.stubGlobal('AFRAME', { INSPECTOR: inspector });
+  const sceneEl = document.createElement('div');
+  document.body.append(sceneEl);
+  sceneEl.object3D = new THREE.Scene();
+  sceneEl.time = 0;
+  const camera = new THREE.PerspectiveCamera(50, 1.5, 0.1, 1000);
+  camera.position.set(0, cameraY, 10);
+  camera.lookAt(0, base, 0);
+  camera.updateMatrixWorld(true);
+  const el = document.createElement('div');
+  sceneEl.append(el);
+  const object = new THREE.Group();
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.2, 1, 0.2),
+    new THREE.MeshBasicMaterial()
+  );
+  mesh.position.y = 0.5;
+  object.add(mesh);
+  object.position.y = base;
+  object.el = el;
+  el.object3D = object;
+  const nativeGet = el.getAttribute.bind(el);
+  const nativeSet = el.setAttribute.bind(el);
+  el.getAttribute = (name) =>
+    name === 'position'
+      ? { x: object.position.x, y: object.position.y, z: object.position.z }
+      : name === 'rotation'
+        ? {
+            x: THREE.MathUtils.radToDeg(object.rotation.x),
+            y: THREE.MathUtils.radToDeg(object.rotation.y),
+            z: THREE.MathUtils.radToDeg(object.rotation.z)
+          }
+        : nativeGet(name);
+  el.setAttribute = (name, value) => {
+    if (name === 'position') object.position.set(value.x, value.y, value.z);
+    else if (name === 'rotation') {
+      object.rotation.set(
+        THREE.MathUtils.degToRad(value.x),
+        THREE.MathUtils.degToRad(value.y),
+        THREE.MathUtils.degToRad(value.z)
+      );
+    } else nativeSet(name, value);
+    object.updateMatrixWorld(true);
+  };
+  sceneEl.object3D.add(object);
+  const controls = new EasyGizmoControls(camera, canvas, sceneEl);
+  const helpers = new THREE.Scene();
+  helpers.add(controls);
+  const commits = [];
+  controls.addEventListener('commitDrag', (event) => commits.push(event));
+  const f = {
+    canvas,
+    inspector,
+    sceneEl,
+    camera,
+    el,
+    object,
+    mesh,
+    controls,
+    commits
+  };
+  f.surface = (y, { x = 0, width = 20, kind = 'segment', slope = 0 } = {}) => {
+    const groundEl = document.createElement('div');
+    if (kind === 'segment') groundEl.setAttribute('street-segment', '');
+    if (kind === 'tiles') groundEl.id = 'google3d';
+    if (kind === 'import') {
+      groundEl.setAttribute('gltf-model', 'url(mesh)');
+      groundEl.setAttribute('data-asset-id', 'mesh');
+    }
+    if (kind === 'image') {
+      groundEl.setAttribute('data-asset-id', 'image');
+      groundEl.setAttribute('geometry', 'primitive: plane');
+    }
+    if (kind === 'polygon') groundEl.setAttribute('shape', '');
+    if (kind === 'satellite') {
+      groundEl.setAttribute('data-ignore-raycaster', '');
+      groundEl.setAttribute('data-layer-name', 'Mapbox satellite');
+    }
+    sceneEl.append(groundEl);
+    const geometry = new THREE.PlaneGeometry(width, 20);
+    geometry.rotateX(-Math.PI / 2);
+    const positions = geometry.attributes.position;
+    for (let i = 0; i < positions.count; i++) {
+      positions.setY(i, slope * positions.getX(i));
+    }
+    geometry.computeVertexNormals();
+    const ground = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial());
+    ground.position.set(x, y, 0);
+    ground.el = groundEl;
+    sceneEl.object3D.add(ground);
+    ground.updateMatrixWorld(true);
+    sceneEl.dispatchEvent(new Event('child-attached'));
+    return { el: groundEl, mesh: ground };
+  };
+  f.frame = (advance = true) => {
+    if (advance) sceneEl.time += 16;
+    sceneEl.object3D.updateMatrixWorld(true);
+    controls.updateMatrixWorld(true);
+  };
+  f.attach = () => {
+    controls.attach(el);
+    f.frame();
+  };
+  f.pointer = (type, world, pointerType = 'mouse', pointerId = 1) => {
+    const point = world.clone().project(camera);
+    const event = new MouseEvent(type, {
+      clientX: (point.x + 1) * 600,
+      clientY: (1 - point.y) * 400,
+      button: 0,
+      bubbles: true,
+      cancelable: true
+    });
+    Object.defineProperties(event, {
+      pointerType: { value: pointerType },
+      pointerId: { value: pointerId },
+      isPrimary: { value: pointerId === 1 }
+    });
+    canvas.dispatchEvent(event);
+    return event;
+  };
+  f.start = (pointerType = 'mouse') => {
+    f.pointer('pointerdown', controls.moveGroup.position, pointerType);
+    expect(controls.isDragging).toBe(true);
+    expect(controls.axis).toBe('move');
+  };
+  fixtures.push(f);
+  return f;
+}
+
+describe('classified rays composed with real move gestures', () => {
+  for (const degrees of [30, 50]) {
+    it(`follows the exact ${degrees} degree ramp without pitching the object`, () => {
+      const f = fixture();
+      const slope = Math.tan(THREE.MathUtils.degToRad(degrees));
+      f.surface(0, { slope });
+      f.attach();
+      f.start();
+      f.pointer('pointerup', new THREE.Vector3(1, 0, 0));
+      f.frame();
+      expect(f.object.position.x).toBeCloseTo(1, 3);
+      expect(f.object.position.y).toBeCloseTo(slope, 3);
+      expect(f.object.rotation.x).toBe(0);
+      expect(f.object.rotation.z).toBe(0);
+    });
+  }
+
+  it('crosses millimetre-high lane markings without latching to entity identity', () => {
+    const f = fixture();
+    f.surface(0);
+    f.surface(0.003, { x: 0.3, width: 0.3 });
+    f.attach();
+    f.start();
+    f.pointer('pointermove', new THREE.Vector3(0.3, 0, 0));
+    f.frame();
+    expect(f.object.position.y).toBeCloseTo(0.003, 3);
+    f.pointer('pointerup', new THREE.Vector3(0.6, 0, 0));
+    f.frame();
+    expect(f.object.position.y).toBe(0);
+  });
+
+  it('ignores a polygon fill over a road', () => {
+    const f = fixture();
+    f.surface(0);
+    const polygon = f.surface(0.15, { kind: 'polygon' });
+    f.attach();
+    f.start();
+    f.pointer('pointerup', new THREE.Vector3(0.2, 0, 0));
+    f.frame();
+    expect(f.object.position.y).toBe(0);
+    expect(f.controls.landingUpY).toBeNull();
+    expect(
+      f.controls.probe.lastHits.some((hit) => hit.object.el === polygon.el)
+    ).toBe(false);
+  });
+
+  it('follows and lands on tiles terrain with no authored street', () => {
+    const f = fixture({ base: 2 });
+    f.surface(0, { kind: 'tiles', slope: 0.2 });
+    f.attach();
+    f.start();
+    f.pointer('pointerup', new THREE.Vector3(0.5, 2, 0));
+    f.frame();
+    f.frame();
+    expect(f.object.position.y).toBeCloseTo(2.1, 3);
+    expect(f.controls.landingDownY).toBeCloseTo(0.1, 3);
+    const target = f.controls.landingDownGroup.position.clone();
+    f.pointer('pointerdown', target);
+    f.pointer('pointerup', target);
+    expect(f.object.position.y).toBeCloseTo(0.1, 3);
+    expect(f.commits.at(-1).name).toBe('place');
+  });
+
+  it('holds height without landing targets on a satellite-only scene', () => {
+    const f = fixture({ base: 1 });
+    f.surface(0, { kind: 'satellite' });
+    f.attach();
+    f.start();
+    f.pointer('pointerup', new THREE.Vector3(1, 1, 0));
+    f.frame();
+    expect(f.object.position.y).toBe(1);
+    expect(f.controls.landingDownY).toBeNull();
+    expect(f.controls.landingUpY).toBeNull();
+    expect(f.controls.probe.lastHits).toHaveLength(0);
+  });
+
+  for (const roofHeight of [4, 40]) {
+    it(`stays on pavement below a ${roofHeight} m roof`, () => {
+      const f = fixture();
+      f.surface(0);
+      const roof = f.surface(roofHeight, {
+        kind: 'import',
+        x: 0.5,
+        width: 0.8
+      });
+      f.attach();
+      f.start();
+      f.pointer('pointerup', new THREE.Vector3(0.5, 0, 0));
+      f.frame();
+      expect(f.object.position.y).toBe(0);
+      expect(f.controls.landingUpY).toBeCloseTo(roofHeight, 6);
+      expect(f.controls._landingUpEntity).toBe(roof.el);
+    });
+  }
+
+  it('floats off a 20 m platform and spans the gap to its floor target', () => {
+    const f = fixture({ base: 20, cameraY: 30 });
+    f.surface(0);
+    f.surface(20, { x: -0.5, width: 1.1 });
+    f.attach();
+    f.start();
+    f.pointer('pointerup', new THREE.Vector3(1, 20, 0));
+    f.frame();
+    f.frame();
+    expect(f.object.position.y).toBe(20);
+    expect(f.controls.landingDownY).toBeCloseTo(0, 6);
+    expect(
+      f.controls.landingDownGroup.userData.chevrons.filter((c) => c.visible)
+        .length
+    ).toBeGreaterThan(1);
+  });
+
+  it('caps an above-horizon round drag and returns when the pointer comes back down', () => {
+    const f = fixture();
+    f.surface(0);
+    f.attach();
+    f.start();
+    expect(f.controls.dragConstrained).toBe(false);
+    const sky = new THREE.Vector3(0, 20, -10);
+    f.pointer('pointermove', sky);
+    f.frame();
+    expect(f.object.position.z).toBeCloseTo(
+      f.camera.position.z - HORIZON_CAP_METRES,
+      3
+    );
+    expect(f.object.position.y).toBe(0);
+    f.pointer('pointermove', sky.clone().add(new THREE.Vector3(0, 5, 0)));
+    f.frame();
+    expect(f.object.position.z).toBeCloseTo(
+      f.camera.position.z - HORIZON_CAP_METRES,
+      3
+    );
+    f.pointer('pointerup', new THREE.Vector3(0, 0, 0));
+    f.frame();
+    expect(f.object.position.length()).toBe(0);
+    expect(f.commits).toHaveLength(1);
+  });
+
+  for (const height of [0.15, 1]) {
+    for (const distance of [0.1, 1]) {
+      it(`handles a ${height} m downward step at ${distance} m per frame`, () => {
+        const f = fixture({ base: height });
+        f.surface(0);
+        f.surface(height, { x: -0.5, width: 1.1 });
+        f.attach();
+        f.start();
+        const rays = vi.spyOn(f.controls.probe.raycaster, 'intersectObjects');
+        f.pointer('pointerup', new THREE.Vector3(distance, height, 0));
+        f.frame();
+        expect(f.object.position.y).toBe(height === 0.15 ? 0 : 1);
+        expect(rays.mock.calls.length).toBeLessThanOrEqual(13);
+        if (distance === 1) expect(rays.mock.calls.length).toBeGreaterThan(1);
+      });
+    }
+  }
+
+  for (const enabled of [true, false]) {
+    it(`fast roof approach ${enabled ? 'holds with' : 'hops without'} path evaluation`, () => {
+      const f = fixture();
+      f.surface(0);
+      f.surface(1, { kind: 'import', x: 1, width: 1.6 });
+      f.attach();
+      f.controls.pathEvaluationEnabled = enabled;
+      f.start();
+      const rays = vi.spyOn(f.controls.probe.raycaster, 'intersectObjects');
+      f.pointer('pointerup', new THREE.Vector3(1, 0, 0));
+      f.frame();
+      expect(f.object.position.y).toBe(enabled ? 0 : 1);
+      expect(rays.mock.calls.length).toBe(enabled ? 5 : 1);
+    });
+  }
+  it('starts, tracks and releases onto a kerb without a second frame budget', () => {
+    const f = fixture();
+    f.surface(0);
+    f.surface(0.15, { x: 0.3, width: 0.4 });
+    f.attach();
+    f.start();
+    const rays = vi.spyOn(f.controls.probe.raycaster, 'intersectObjects');
+    f.pointer('pointermove', new THREE.Vector3(0.2, 0, 0));
+    f.frame();
+    expect(f.object.position.y).toBeCloseTo(0.15, 3);
+    const spent = rays.mock.calls.length;
+    f.pointer('pointerup', new THREE.Vector3(0.35, 0, 0));
+    f.canvas.dispatchEvent(new Event('lostpointercapture', { bubbles: true }));
+    f.frame(false);
+    expect(rays).toHaveBeenCalledTimes(spent);
+    expect(f.commits).toHaveLength(0);
+    f.frame();
+    expect(f.object.position.x).toBeCloseTo(0.35, 3);
+    expect(f.object.position.y).toBeCloseTo(0.15, 3);
+    expect(f.commits).toHaveLength(1);
+    expect(f.controls.isDragging).toBe(false);
+  });
+
+  it('follows a multi-sample ramp, preserving initial clearance', () => {
+    const f = fixture({ base: 0.4 });
+    f.surface(0, { slope: 0.8 });
+    f.attach();
+    f.start();
+    f.pointer('pointerup', new THREE.Vector3(1, 0.4, 0));
+    f.frame();
+    expect(f.object.position.x).toBeCloseTo(1, 3);
+    expect(f.object.position.y).toBeCloseTo(1.2, 3);
+  });
+
+  it('holds over a cliff and offers the actual destination floor even over budget', () => {
+    const f = fixture();
+    f.surface(0, { x: -1, width: 2 });
+    const floor = f.surface(-3);
+    f.attach();
+    f.start();
+    const rays = vi.spyOn(f.controls.probe.raycaster, 'intersectObjects');
+    f.pointer('pointerup', new THREE.Vector3(4, 0, 0));
+    f.frame();
+    expect(rays).toHaveBeenCalledTimes(1);
+    expect(f.object.position.y).toBe(0);
+    expect(f.controls.landingDownY).toBeCloseTo(-3, 6);
+    expect(f.controls._landingDownEntity).toBe(floor.el);
+  });
+
+  it('casts every interior after an early drop and finishes on the endpoint', () => {
+    const f = fixture();
+    f.surface(-3);
+    const destination = f.surface(-1, { x: 1, width: 0.1 });
+    const rays = vi.spyOn(f.controls.probe.raycaster, 'intersectObjects');
+    const result = evaluatePath({
+      from: { x: 0, z: 0 },
+      to: { x: 1, z: 0 },
+      fromSupportY: 0,
+      probeAt: f.controls._probeAt,
+      budget: 12
+    });
+    expect(result.continuous).toBe(false);
+    expect(result.cast).toBe(result.demanded);
+    expect(rays).toHaveBeenCalledTimes(result.demanded + 1);
+    expect(result.endColumn.below.entity).toBe(destination.el);
+    expect(f.controls.probe.lastHits[0].object.el).toBe(destination.el);
+  });
+
+  it('prefers authored support over tiles and excludes a sub-step image plane', () => {
+    const f = fixture();
+    const ground = f.surface(0);
+    f.surface(0.1, { kind: 'tiles' });
+    f.surface(0.15, { kind: 'image' });
+    f.attach();
+    f.start();
+    f.pointer('pointerup', new THREE.Vector3(0.1, 0, 0));
+    f.frame();
+    expect(f.object.position.y).toBe(0);
+    expect(f.controls._landingDownEntity).toBe(ground.el);
+    expect(f.controls.probe.probeColumn(0.1, 0, 0).above.y).toBeCloseTo(0.1, 6);
+    expect(
+      f.controls.probe.lastHits.some(
+        (hit) => hit.object.el.getAttribute('data-asset-id') === 'image'
+      )
+    ).toBe(false);
+  });
+
+  it('holds below a tall imported roof and offers it as a landing target', () => {
+    const f = fixture();
+    f.surface(0);
+    const roof = f.surface(3, { kind: 'import', x: 0.3, width: 0.4 });
+    f.attach();
+    f.start();
+    f.pointer('pointerup', new THREE.Vector3(0.3, 0, 0));
+    f.frame();
+    expect(f.object.position.y).toBe(0);
+    expect(f.controls.landingUpY).toBeCloseTo(3, 6);
+    expect(f.controls._landingUpEntity).toBe(roof.el);
+  });
+});
+
+describe('release, touch and attachment lifecycle', () => {
+  it('renders the exact parapet move and landing subsystems in independent regimes', () => {
+    const f = fixture({ base: 2, cameraY: 0 });
+    f.camera.position.z = 15;
+    f.camera.lookAt(0, 0, 0);
+    f.camera.updateMatrixWorld(true);
+    f.surface(-6);
+    f.attach();
+    expect(f.controls.flat).toBe(true);
+    expect(f.controls._shallowAmount).toBe(1);
+    expect(f.controls.landingDownGroup.userData.faceAmount).toBe(0);
+    expect(f.controls.landingDownGroup.visible).toBe(true);
+  });
+  for (const capture of ['absent', 'throws', 'works']) {
+    it(`retains touch ownership when capture ${capture}`, () => {
+      const f = fixture();
+      f.surface(0);
+      f.attach();
+      if (capture === 'throws') {
+        f.canvas.setPointerCapture = () => {
+          throw new Error('capture unavailable');
+        };
+      }
+      if (capture === 'works') f.canvas.setPointerCapture = vi.fn();
+      f.start('touch');
+      const originalMouse = f.controls.mouse.clone();
+      const elsewhere = new THREE.Vector3(3, 0, 0);
+      for (const type of [
+        'pointerdown',
+        'pointermove',
+        'pointerup',
+        'pointercancel',
+        'lostpointercapture'
+      ]) {
+        f.pointer(type, elsewhere, 'touch', 2);
+        f.frame();
+        expect(f.controls.isDragging).toBe(true);
+        expect(f.controls._pointerId).toBe(1);
+        expect(f.controls._pressWasClaimed).toBe(true);
+        expect(f.controls.mouse.equals(originalMouse)).toBe(true);
+        expect(f.object.position.x).toBe(0);
+        expect(f.commits).toHaveLength(0);
+      }
+      f.pointer('pointermove', new THREE.Vector3(0.2, 0, 0), 'touch');
+      f.frame();
+      expect(f.object.position.x).toBeCloseTo(0.2, 3);
+      f.pointer('pointerup', new THREE.Vector3(0.3, 0, 0), 'touch');
+      f.frame();
+      expect(f.object.position.x).toBeCloseTo(0.3, 3);
+      expect(f.commits).toHaveLength(1);
+    });
+  }
+
+  it('does not let a second finger activate a held landing button', () => {
+    const f = fixture({ base: 2 });
+    f.surface(0);
+    f.attach();
+    const target = f.controls.landingDownGroup.position.clone();
+    f.pointer('pointerdown', target, 'touch');
+    f.pointer('pointerup', target, 'touch', 2);
+    expect(f.controls.isDragging).toBe(true);
+    expect(f.object.position.y).toBe(2);
+    expect(f.commits).toHaveLength(0);
+    f.pointer('pointerup', target, 'touch');
+    expect(f.object.position.y).toBe(0);
+    expect(f.commits).toHaveLength(1);
+  });
+
+  it('cancels only when native capture is lost by the owning pointer', () => {
+    const f = fixture();
+    f.surface(0);
+    f.attach();
+    f.start('touch');
+    f.pointer('pointermove', new THREE.Vector3(0.2, 0, 0), 'touch');
+    f.frame();
+    f.pointer('lostpointercapture', new THREE.Vector3(0.2, 0, 0), 'touch', 2);
+    expect(f.controls.isDragging).toBe(true);
+    f.pointer('lostpointercapture', new THREE.Vector3(0.2, 0, 0), 'touch');
+    expect(f.controls.isDragging).toBe(false);
+    expect(f.object.position.x).toBe(0);
+    expect(f.commits).toHaveLength(0);
+  });
+  it('keeps the chevron connection visible when both ends are outside opposite edges', () => {
+    const f = fixture();
+    f.attach();
+    f.camera.position.set(0, 0, 10);
+    f.camera.lookAt(0, 0, 0);
+    f.camera.updateMatrixWorld(true);
+    const group = f.controls.landingDownGroup;
+    group.position.set(0, -20, 0);
+    f.controls._layoutChevrons(group, -20, 20, 2, 0, 0);
+    group.updateMatrixWorld(true);
+    const projections = group.userData.chevrons
+      .filter((c) => c.visible)
+      .map((c) => c.getWorldPosition(new THREE.Vector3()).project(f.camera));
+    expect(projections.some((p) => Math.abs(p.y + 0.95) < 1e-6)).toBe(true);
+  });
+
+  it('commits the latest tracked coordinate on mouseleave', () => {
+    const f = fixture();
+    f.surface(0);
+    f.attach();
+    f.start();
+    f.pointer('pointermove', new THREE.Vector3(0.4, 0, 0));
+    f.canvas.dispatchEvent(new Event('mouseleave'));
+    f.frame();
+    expect(f.object.position.x).toBeCloseTo(0.4, 3);
+    expect(f.commits).toHaveLength(1);
+  });
+
+  it('cancels a move whose geometry changes and refreshes the new base', () => {
+    const f = fixture();
+    f.surface(0);
+    f.attach();
+    f.start();
+    f.pointer('pointermove', new THREE.Vector3(0.5, 0, 0));
+    f.frame();
+    f.mesh.position.y = 1.5;
+    f.el.dispatchEvent(new Event('shape-geometry-changed'));
+    f.frame();
+    expect(f.object.position.x).toBe(0);
+    expect(f.controls.isDragging).toBe(false);
+    expect(f.controls.baseY).toBe(1);
+    expect(f.commits).toHaveLength(0);
+  });
+  it('starts the shallow strip on an upward ray that cannot intersect the base plane', () => {
+    const f = fixture({ cameraY: 0.01 });
+    f.surface(0);
+    f.attach();
+    const point = f.controls.moveGroup.position.clone();
+    point.y += f.controls.squareSide * 0.05;
+    f.pointer('pointerdown', point);
+    expect(f.controls.raycaster.ray.direction.y).toBeGreaterThan(0);
+    expect(f.controls.isDragging).toBe(true);
+    expect(f.controls.dragConstrained).toBe(true);
+    f.pointer('pointerup', point.clone().add(new THREE.Vector3(0.1, 0, 0)));
+    f.frame();
+    expect(f.object.position.x).toBeGreaterThan(0);
+    expect(f.commits).toHaveLength(1);
+  });
+
+  it('rehits a landing release even without an intervening pointermove', () => {
+    const f = fixture({ base: 2 });
+    f.surface(0);
+    f.attach();
+    f.pointer('pointerdown', f.controls.landingDownGroup.position);
+    expect(f.controls.axis).toBe('landingDown');
+    expect(f.controls.isDragging).toBe(true);
+    f.pointer('pointerup', new THREE.Vector3(20, 0, 0));
+    expect(f.commits).toHaveLength(0);
+    expect(f.object.position.y).toBe(2);
+  });
+
+  it('disarms touch landing feedback without sliding and places on a rearmed release', () => {
+    const f = fixture({ base: 2 });
+    f.surface(0);
+    f.attach();
+    const target = f.controls.landingDownGroup.position.clone();
+    f.pointer('pointerdown', target, 'touch');
+    f.frame();
+    expect(f.controls.axis).toBe('landingDown');
+    expect(f.controls.landingDownGroup.userData.slideFrom).toBeNull();
+    expect(f.controls.materials.landingDown.flat.opacity).toBeCloseTo(
+      OPACITY_ACTION
+    );
+    f.pointer('pointermove', new THREE.Vector3(20, 0, 0), 'touch');
+    expect(f.controls.materials.landingDown.flat.opacity).toBeCloseTo(
+      OPACITY_REST
+    );
+    f.pointer('pointermove', target, 'touch');
+    expect(f.controls.materials.landingDown.flat.opacity).toBeCloseTo(
+      OPACITY_ACTION
+    );
+    const rays = vi.spyOn(f.controls.probe.raycaster, 'intersectObjects');
+    f.pointer('pointerup', target, 'touch');
+    expect(rays).toHaveBeenCalledTimes(1);
+    expect(f.object.position.y).toBe(0);
+    expect(f.commits).toHaveLength(1);
+    expect(f.controls.axis).toBeNull();
+  });
+
+  for (const change of ['removed', 'moved', 'replaced']) {
+    it(`rejects a ${change} landing surface after press`, () => {
+      const f = fixture({ base: 2 });
+      const ground = f.surface(0);
+      f.attach();
+      const target = f.controls.landingDownGroup.position.clone();
+      f.pointer('pointerdown', target);
+      expect(f.controls.axis).toBe('landingDown');
+      if (change === 'removed') ground.el.remove();
+      if (change === 'moved') {
+        ground.mesh.position.y = 0.5;
+        ground.mesh.updateMatrixWorld(true);
+      }
+      if (change === 'replaced') {
+        f.sceneEl.object3D.remove(ground.mesh);
+        f.surface(0);
+      }
+      f.pointer('pointerup', target);
+      expect(f.object.position.y).toBe(2);
+      expect(f.commits).toHaveLength(0);
+    });
+  }
+
+  it('clamps the final chevron at the viewport edge without adding a hit target', () => {
+    const f = fixture({ base: 2 });
+    f.surface(-20);
+    f.attach();
+    const target = f.controls.landingDownGroup;
+    const world = new THREE.Vector3();
+    const chevrons = target.userData.chevrons.filter((c) => c.visible);
+    const projections = chevrons.map((c) =>
+      c.getWorldPosition(world).clone().project(f.camera)
+    );
+    expect(projections.some((p) => Math.abs(Math.abs(p.y) - 0.95) < 1e-6)).toBe(
+      true
+    );
+    const hits = [];
+    chevrons.forEach((c) => c.raycast(f.controls.raycaster, hits));
+    expect(hits).toHaveLength(0);
+    const width = chevrons[0].scale.x;
+    f.controls._layoutChevrons(
+      target,
+      -20,
+      2,
+      f.controls.squareSide * 4,
+      0,
+      100
+    );
+    expect(target.userData.chevrons[0].scale.x).toBe(width);
+  });
+
+  it('returning to the press on pointerup preserves the no-op history comparison', () => {
+    const f = fixture();
+    f.surface(0);
+    f.attach();
+    f.start();
+    f.pointer('pointermove', new THREE.Vector3(0.5, 0, 0));
+    f.frame();
+    f.pointer('pointerup', new THREE.Vector3(0, 0, 0));
+    f.pointer('pointerdown', new THREE.Vector3(0, 0, 0));
+    f.frame();
+    expect(f.commits).toHaveLength(1);
+    expect(
+      f.commits[0].changes.filter((c) => c.value !== c.oldValue)
+    ).toHaveLength(0);
+  });
+
+  for (const exit of ['blur', 'pointercancel', 'close']) {
+    it(`restores a queued release on ${exit}`, () => {
+      const f = fixture();
+      f.surface(0);
+      f.attach();
+      f.start();
+      const changed = vi.fn();
+      f.controls.addEventListener('objectChange', changed);
+      f.pointer('pointermove', new THREE.Vector3(0.5, 0, 0));
+      f.frame();
+      f.pointer('pointerup', new THREE.Vector3(0.7, 0, 0));
+      if (exit === 'close') f.inspector.opened = false;
+      else if (exit === 'pointercancel') {
+        f.pointer('pointercancel', new THREE.Vector3(0.7, 0, 0));
+      } else window.dispatchEvent(new Event(exit));
+      f.frame();
+      expect(f.object.position.x).toBe(0);
+      expect(f.commits).toHaveLength(0);
+      expect(changed).toHaveBeenCalled();
+    });
+  }
+
+  it('has touch action feedback without hover/dimming and clears the external hover signal', () => {
+    const f = fixture();
+    f.surface(0);
+    f.attach();
+    const hover = [];
+    f.controls.addEventListener('axisHoverChange', (e) => hover.push(e.axis));
+    f.start('touch');
+    expect(f.controls.materials.move.flat.opacity).toBeCloseTo(OPACITY_ACTION);
+    expect(f.controls.materials.rotate.flat.opacity).toBeCloseTo(OPACITY_REST);
+    f.pointer('pointerup', new THREE.Vector3(0, 0, 0), 'touch');
+    f.frame();
+    expect(hover.at(-1)).toBeNull();
+    expect(f.controls.axis).toBeNull();
+  });
+
+  it('refreshes changed shape bounds and seeds the initial regime from the base', () => {
+    const f = fixture({ base: 0, cameraY: 1 });
+    f.mesh.position.y = 8.5;
+    f.surface(8);
+    f.attach();
+    expect(f.controls.flat).toBe(false);
+    expect(f.controls._anim.endMs).toBe(f.controls._anim.startMs);
+    f.mesh.position.y = 0.5;
+    f.el.dispatchEvent(new Event('shape-geometry-changed'));
+    f.frame();
+    expect(f.controls.baseY).toBeCloseTo(0);
+  });
+
+  it('does not cast idle rays while the editor is closed', () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.surface(0);
+    f.attach();
+    const rays = vi.spyOn(f.controls.probe.raycaster, 'intersectObjects');
+    f.inspector.opened = false;
+    vi.advanceTimersByTime(IDLE_PROBE_INTERVAL_MS * 3);
+    expect(rays).not.toHaveBeenCalled();
+  });
+
+  it('excludes every helper descendant from navigation picking, including after detach', () => {
+    const f = fixture();
+    f.attach();
+    const meshes = [];
+    f.controls.traverse((node) => {
+      if (node.isMesh) meshes.push(node);
+    });
+    expect(meshes.length).toBeGreaterThan(0);
+    for (const mesh of meshes) {
+      expect(cursorInternals._isExcludedObject(mesh)).toBe(true);
+    }
+    f.controls.detach();
+    for (const mesh of meshes) {
+      expect(cursorInternals._isExcludedObject(mesh)).toBe(true);
+    }
+  });
+});
