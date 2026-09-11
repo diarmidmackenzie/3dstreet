@@ -597,9 +597,8 @@ class EasyGizmoControls extends GizmoPointerControls {
     if (!el || !el.object3D) return false;
     if (el.hasAttribute('data-no-transform')) return false;
     if (el.classList && el.classList.contains('street-parent')) return false;
-    // An individual lane of a managed street keeps its classic gizmo: its
-    // position is the street's business, and the street itself is the thing
-    // this handle moves.
+    // street-align owns managed-segment positions; the viewport gives these
+    // entities width bars only.
     if (
       el.components &&
       el.components['street-segment'] &&

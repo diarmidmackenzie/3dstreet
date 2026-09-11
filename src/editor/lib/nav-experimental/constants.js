@@ -164,6 +164,22 @@ export const ZOOM_PER_WHEEL_TICK = 0.05;
 // reversibility inside this radius for never getting stuck.
 export const WHEEL_ZOOM_OUT_MIN_ANCHOR_DIST_METRES = 16;
 
+// Sustained wheel-zoom acceleration (#1966, #1967). FEEL EXPERIMENT — set
+// BOOST_MAX back to 1 to disable entirely if accelerated zoom overshoots or
+// feels twitchy. At the flat 5%/detent rate, street level → a 4-sq-mi
+// overview (~2.5 km AGL) is ~150 detents of continuous scrolling, and the
+// descent back is just as long. A continuous scroll in EITHER direction now
+// ramps the per-detent rate: the first DEADBAND ticks of a streak are
+// unboosted (precision detents feel identical), then the factor climbs
+// linearly to BOOST_MAX over the next RAMP ticks (5% → 20%/detent). The
+// streak resets on a direction flip, on any non-wheel camera move, or after
+// RESET_MS without wheel input, so a resumed scroll always starts at the
+// base rate. See navMath.zoomBoost.
+export const WHEEL_ZOOM_BOOST_MAX = 4;
+export const WHEEL_ZOOM_BOOST_DEADBAND_TICKS = 3;
+export const WHEEL_ZOOM_BOOST_RAMP_TICKS = 10;
+export const WHEEL_ZOOM_BOOST_RESET_MS = 500;
+
 // Wheel zoom — street-level FOV step (TH-09). Fraction by which
 // the field of view shrinks (zoom-in) / grows (zoom-out) per nominal tick.
 // Split out from ZOOM_PER_WHEEL_TICK so FOV tunes independently of the dolly.
@@ -267,8 +283,18 @@ export const FALLBACK_FORWARD_DIST = 30;
 // — it falls back to the lower bound). The lower bound is the live-tunable
 // knob (`wheelZoomLateralCapLowerBoundMetres`); the coefficient is a constant
 // re-tuned here.
+//
+// FEEL EXPERIMENT (#1941) — revert to 0.1 if zooming lurches at shallow tilt.
+// The cap binds when tan(tilt) < ZOOM_PER_WHEEL_TICK / COEFF, and once it
+// binds the effective zoom rate degrades from the flat 5%/detent to
+// (2 × COEFF)·tan(tilt) — at 0.1 that knee sat at ~27° tilt, so ordinary
+// angled views zoomed up to ~6× slower than plan view (the reported bug:
+// plan view fine, angled views variable/slow). 0.25 moves the knee down to
+// ~11°, keeping the flat 5% rate through normal working tilts while still
+// bounding the grazing-ray lurch the cap exists for. Regression coverage:
+// ExperimentalControls.wheelZoomTiltRate.test.js.
 export const WHEEL_ZOOM_LATERAL_CAP_LOWER_BOUND_METRES = 2; // 1–2; feel
-export const WHEEL_ZOOM_LATERAL_CAP_AGL_COEFF = 0.1;
+export const WHEEL_ZOOM_LATERAL_CAP_AGL_COEFF = 0.25;
 
 // Per-caller far-ground reach ceiling for the wheel-zoom path (TH-18).
 // Far above any real scene (1000 km) but well short of float overflow, so

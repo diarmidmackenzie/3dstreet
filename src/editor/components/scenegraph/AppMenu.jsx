@@ -21,14 +21,17 @@ import {
   cutSelectedEntity,
   pasteFromClipboard
 } from '../../lib/clipboard.js';
-import { cloneSelectedEntity, removeSelectedEntity } from '../../lib/entity.js';
+import {
+  cloneSelectedEntity,
+  removeSelectedEntity,
+  ensureViewerStartAtCurrentView
+} from '../../lib/entity.js';
 import { editShortcuts } from '../../lib/editShortcuts.js';
 import { commonMessages } from '@/editor/i18n/commonMessages';
 import { SUPPORTED_LOCALES } from '@/editor/i18n/config';
 import {
   getNavScheme,
-  applyNavScheme,
-  isExperimentalNav
+  applyNavScheme
 } from '@/editor/lib/nav-experimental/flag';
 import {
   cameraTiltDegrees,
@@ -42,9 +45,7 @@ import { captureNavDiscovery } from '@/editor/lib/navAnalytics.js';
 // top-down, "Point North" once it is, disabled when both top-down and
 // north-up (a click would be a no-op) — the same pose tests as the compass
 // tooltip. Rendered as its own component so the pose is read fresh each
-// time the View menu opens (Radix unmounts closed menu content). Only
-// rendered under the experimental-nav schemes, whose ExperimentalControls
-// own handleCompassBodyClick.
+// time the View menu opens (Radix unmounts closed menu content).
 const PlanViewMenuItem = () => {
   const camera = AFRAME.INSPECTOR?.camera;
   const isTopDown =
@@ -685,18 +686,6 @@ const AppMenu = ({ currentUser }) => {
                   >
                     <Menubar.RadioItem
                       className="MenubarRadioItem"
-                      value="legacy"
-                    >
-                      <Menubar.ItemIndicator className="MenubarItemIndicator">
-                        <AwesomeIcon icon={faCircle} size={8} />
-                      </Menubar.ItemIndicator>
-                      <FormattedMessage
-                        id="appMenu.view.navigationControls.legacy"
-                        defaultMessage="Legacy"
-                      />
-                    </Menubar.RadioItem>
-                    <Menubar.RadioItem
-                      className="MenubarRadioItem"
                       value="standard"
                     >
                       <Menubar.ItemIndicator className="MenubarItemIndicator">
@@ -746,8 +735,26 @@ const AppMenu = ({ currentUser }) => {
             >
               <FormattedMessage {...commonMessages.resetCameraView} />
             </Menubar.Item>
-            {isExperimentalNav() && <PlanViewMenuItem />}
+            <PlanViewMenuItem />
             <Menubar.Separator className="MenubarSeparator" />
+            <Menubar.Item
+              className="MenubarItem"
+              onClick={() => {
+                // The scene's Starting View (viewer-start): where visitors
+                // open the scene and where Start flies. Creates it on first
+                // use, moves it after, and selects it either way.
+                ensureViewerStartAtCurrentView({ select: true });
+                STREET.notify.successMessage(
+                  'Starting View set to current camera view'
+                );
+                posthog.capture('set_starting_view_clicked');
+              }}
+            >
+              <FormattedMessage
+                id="appMenu.view.setStartingView"
+                defaultMessage="Set as Starting View"
+              />
+            </Menubar.Item>
             <Menubar.Item
               className="MenubarItem"
               onClick={() => {

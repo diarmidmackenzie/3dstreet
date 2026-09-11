@@ -1,23 +1,13 @@
-import {
-  canRenameEntity,
-  cloneEntity,
-  removeSelectedEntity,
-  setFocusCameraPose
-} from '../../lib/entity';
+import { canRenameEntity } from '../../lib/entity';
 import { Button } from '../elements';
 import ComponentsContainer from './ComponentsContainer';
+import EntityActionButtons from './EntityActionButtons';
 import Events from '../../lib/Events';
 import Mixins from '../widgets/Mixins';
 import PropTypes from 'prop-types';
 import React from 'react';
 import { FormattedMessage } from 'react-intl';
-import AddGeneratorComponent from './AddGeneratorComponent';
-import {
-  ArrowLeftHookIcon,
-  TrashIcon,
-  Copy32Icon,
-  ArrowsPointingInwardIcon
-} from '@shared/icons';
+import { ArrowLeftHookIcon } from '@shared/icons';
 import IntersectionSidebar from './IntersectionSidebar';
 import StreetSegmentSidebar from './StreetSegmentSidebar';
 import ManagedStreetSidebar from './ManagedStreetSidebar';
@@ -26,10 +16,9 @@ import DriveControlsSidebar from './DriveControlsSidebar';
 import FlyControlsSidebar from './FlyControlsSidebar';
 import StreetTrafficReplaySidebar from './StreetTrafficReplaySidebar';
 import UserLayersSidebar from './UserLayersSidebar';
-import AdvancedComponents from './AdvancedComponents';
+import PanelFooter from './PanelFooter';
 import AssetInfoPanel from './AssetInfoPanel';
 import EntityLabel from '../scenegraph/EntityLabel';
-import { commonMessages } from '@/editor/i18n/commonMessages';
 export default class Sidebar extends React.Component {
   static propTypes = {
     entity: PropTypes.object
@@ -108,19 +97,47 @@ export default class Sidebar extends React.Component {
     // gets the inline rename on the title label (see canRenameEntity).
     const canRename = canRenameEntity(entity);
 
+    // The condensed segment and managed-street panels (#1753) carry the
+    // entity label inside their own sticky header rows, so the panel-level
+    // title would duplicate it.
+    const isStreetSegment = !!entity.getAttribute('street-segment');
+    const hasOwnHeader =
+      isStreetSegment || !!entity.getAttribute('managed-street');
+
+    // Focus/Duplicate/Delete inline in the title row (the managed-street
+    // header treatment), for real entities only: the fixed pseudo-layers
+    // aren't clonable/deletable, and no-transform entities keep the old
+    // gating.
+    const isPseudoLayer =
+      entity.id === 'reference-layers' ||
+      entity.id === 'environment' ||
+      entity.id === 'street-container';
+    const showEntityActions =
+      !hasOwnHeader &&
+      !isPseudoLayer &&
+      entity.tagName !== 'A-SCENE' &&
+      !entity.hasAttribute('data-no-transform');
+
     return (
       <div className="properties-panel" tabIndex="0">
         <ShapeDrawInstructions />
-        <div id="layers-title">
-          <div className="layersBlock">
-            <EntityLabel entity={entity} editable={canRename} />
+        {!hasOwnHeader && (
+          <div id="layers-title">
+            <div className="layersBlock">
+              <EntityLabel entity={entity} editable={canRename} />
+            </div>
+            {showEntityActions && <EntityActionButtons entity={entity} />}
           </div>
-        </div>
-        <div className="scroll">
+        )}
+        {/* Sticky panel headers (the entity title row, and the segment /
+            street panels' strip+header) must stick to the panel's real
+            scroll pane (RightPanel's tab pane), so this inner .scroll
+            wrapper must never be a scrollport of its own. */}
+        <div className="scroll scroll-passthrough">
           {entity.id !== 'reference-layers' &&
           entity.id !== 'environment' &&
           entity.id !== 'street-container' &&
-          !entity.getAttribute('street-segment') ? (
+          !hasOwnHeader ? (
             <>
               {entity.classList.contains('autocreated') && (
                 <div className="sidepanelContent">
@@ -166,37 +183,6 @@ export default class Sidebar extends React.Component {
               )}
               <div className="sidepanelContent">
                 <AssetInfoPanel entity={entity} />
-                {entity.hasAttribute('data-no-transform') ? (
-                  <></>
-                ) : (
-                  <div className="sidebar-buttons-small">
-                    <Button
-                      variant={'toolbtn'}
-                      onClick={() =>
-                        Events.emit('objectfocus', entity.object3D)
-                      }
-                      onLongPress={() => setFocusCameraPose(entity)}
-                      longPressDelay={1500} // Optional, defaults to 2000ms
-                      leadingIcon={<ArrowsPointingInwardIcon />}
-                    >
-                      <FormattedMessage {...commonMessages.focus} />
-                    </Button>
-                    <Button
-                      variant={'toolbtn'}
-                      onClick={() => cloneEntity(entity)}
-                      leadingIcon={<Copy32Icon />}
-                    >
-                      <FormattedMessage {...commonMessages.duplicate} />
-                    </Button>
-                    <Button
-                      variant={'toolbtn'}
-                      onClick={() => removeSelectedEntity()}
-                      leadingIcon={<TrashIcon />}
-                    >
-                      <FormattedMessage {...commonMessages.delete} />
-                    </Button>
-                  </div>
-                )}
                 {!!entity.mixinEls.length &&
                   !entity.classList.contains('autocreated') && (
                     <div className="details">
@@ -208,31 +194,22 @@ export default class Sidebar extends React.Component {
               {entity.getAttribute('intersection') && (
                 <IntersectionSidebar entity={entity} />
               )}
-              {entity.getAttribute('managed-street') && (
-                <ManagedStreetSidebar entity={entity} />
-              )}
               {entity.getAttribute('drive-controls') && (
                 <>
                   <DriveControlsSidebar entity={entity} />
-                  <div className="propertyRow">
-                    <AdvancedComponents entity={entity} />
-                  </div>
+                  <PanelFooter entity={entity} />
                 </>
               )}
               {entity.getAttribute('fly-controls') && (
                 <>
                   <FlyControlsSidebar entity={entity} />
-                  <div className="propertyRow">
-                    <AdvancedComponents entity={entity} />
-                  </div>
+                  <PanelFooter entity={entity} />
                 </>
               )}
               {entity.getAttribute('street-traffic-replay') && (
                 <>
                   <StreetTrafficReplaySidebar entity={entity} />
-                  <div className="propertyRow">
-                    <AdvancedComponents entity={entity} />
-                  </div>
+                  <PanelFooter entity={entity} />
                 </>
               )}
               {entity.getAttribute('shape') && <ShapeSidebar entity={entity} />}
@@ -244,16 +221,16 @@ export default class Sidebar extends React.Component {
             </>
           ) : (
             <>
+              {/* The condensed segment and managed-street panels (#1753)
+                  carry their own header, actions and Advanced footer. */}
               {entity.getAttribute('street-segment') && (
-                <>
-                  <StreetSegmentSidebar entity={entity} />
-                  <hr />
-                  <AddGeneratorComponent entity={entity} />
-                  <hr />
-                  <div className="advancedComponentsContainer">
-                    <AdvancedComponents entity={entity} />
-                  </div>
-                </>
+                <StreetSegmentSidebar entity={entity} />
+              )}
+              {entity.getAttribute('managed-street') && (
+                <ManagedStreetSidebar
+                  key={entity.object3D.uuid}
+                  entity={entity}
+                />
               )}
               {entity.id === 'street-container' && (
                 <UserLayersSidebar entity={entity} />

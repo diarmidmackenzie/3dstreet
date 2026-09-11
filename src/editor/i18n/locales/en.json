@@ -92,6 +92,12 @@
   "addLayer.card.flyableHelicopter.name": {
     "defaultMessage": "Flyable Helicopter"
   },
+  "addLayer.card.focusHotspot.desc": {
+    "defaultMessage": "A semitransparent clickable block for view mode. Visitors click it to fly the camera in and read your title and description, then return to the overview."
+  },
+  "addLayer.card.focusHotspot.name": {
+    "defaultMessage": "Focus Hotspot"
+  },
   "addLayer.card.grassBox.desc": {
     "defaultMessage": "Add a large green ground slab with animated instanced grass. The box dimensions, color, and grass options (density, blade height) are all editable in the properties panel."
   },
@@ -245,6 +251,9 @@
   "addLayer.unsupportedFileType": {
     "defaultMessage": "Unsupported file type: {fileName}. Supported formats: GLB, GLTF, JPG, PNG, WebP, AVIF, PLY, SPLAT, SPZ."
   },
+  "advancedComponents.warning": {
+    "defaultMessage": "Warning: editing raw component data may cause unexpected scene damage that you cannot undo. Save a copy of your scene if you want to tinker with these at your own risk."
+  },
   "aiChatPanel.inputPlaceholder": {
     "defaultMessage": "Type a command or type /help for options"
   },
@@ -353,11 +362,11 @@
   "appMenu.view.navigationControls.experimental": {
     "defaultMessage": "Experimental"
   },
-  "appMenu.view.navigationControls.legacy": {
-    "defaultMessage": "Legacy"
-  },
   "appMenu.view.navigationControls.standard": {
     "defaultMessage": "Standard"
+  },
+  "appMenu.view.setStartingView": {
+    "defaultMessage": "Set as Starting View"
   },
   "appMenu.view.showGrid": {
     "defaultMessage": "Show Grid"
@@ -1040,6 +1049,9 @@
   "editorUpgradeModal.alreadyPro": {
     "defaultMessage": "You're already a Pro member — try that action again to continue."
   },
+  "entity.badge.focusHotspot": {
+    "defaultMessage": "Focus hotspot: clickable in view mode. Click to fly the camera to it."
+  },
   "entity.cloneEntity": {
     "defaultMessage": "Clone entity"
   },
@@ -1208,6 +1220,33 @@
   "flyModeControls.yawRate": {
     "defaultMessage": "Yaw rate"
   },
+  "focusHotspot.description": {
+    "defaultMessage": "Description"
+  },
+  "focusHotspot.descriptionPlaceholder": {
+    "defaultMessage": "Shown in the info panel when a visitor clicks…"
+  },
+  "focusHotspot.enabled": {
+    "defaultMessage": "Enabled"
+  },
+  "focusHotspot.previewFocus": {
+    "defaultMessage": "Preview Focus"
+  },
+  "focusHotspot.previewFocusTitle": {
+    "defaultMessage": "Fly the camera to this hotspot now"
+  },
+  "focusHotspot.removeConfirm": {
+    "defaultMessage": "Remove the focus hotspot from this entity? It will no longer be clickable in view mode."
+  },
+  "focusHotspot.setFocusView": {
+    "defaultMessage": "Set Focus View"
+  },
+  "focusHotspot.setFocusViewTitle": {
+    "defaultMessage": "Save the current editor camera as the view visitors fly to when they click this hotspot"
+  },
+  "focusHotspot.tip": {
+    "defaultMessage": "💡 In view mode visitors click this to fly in and read the info panel (the layer name is its title), then return to the overview. See-through hotspots pulse and hide themselves while focused."
+  },
   "geoModal.centerpoint": {
     "defaultMessage": "Centerpoint"
   },
@@ -1364,12 +1403,6 @@
   "geoSidebar.mapGoogle3dAlt": {
     "defaultMessage": "Google 3D"
   },
-  "geoSidebar.mapMapbox2d": {
-    "defaultMessage": "Mapbox 2D Satellite"
-  },
-  "geoSidebar.mapMapbox2dAlt": {
-    "defaultMessage": "Mapbox 2D"
-  },
   "geoSidebar.mapNone": {
     "defaultMessage": "No Map"
   },
@@ -1384,6 +1417,12 @@
   },
   "geoSidebar.mapOsm3dAlt": {
     "defaultMessage": "OSM 3D"
+  },
+  "geoSidebar.mapTiles2d": {
+    "defaultMessage": "2D Satellite Map Tiles"
+  },
+  "geoSidebar.mapTiles2dAlt": {
+    "defaultMessage": "2D Satellite"
   },
   "geoSidebar.mapType": {
     "defaultMessage": "Map Type"
@@ -1565,6 +1604,24 @@
   "loadingSceneModal.dismiss": {
     "defaultMessage": "Dismiss"
   },
+  "managedStreetSidebar.changePath": {
+    "defaultMessage": "Change path…"
+  },
+  "managedStreetSidebar.chipBoundaries": {
+    "defaultMessage": "Boundaries"
+  },
+  "managedStreetSidebar.chipGround": {
+    "defaultMessage": "Ground"
+  },
+  "managedStreetSidebar.chipLabels": {
+    "defaultMessage": "Labels"
+  },
+  "managedStreetSidebar.chipStriping": {
+    "defaultMessage": "Striping"
+  },
+  "managedStreetSidebar.chipVehicles": {
+    "defaultMessage": "Vehicles"
+  },
   "managedStreetSidebar.convertToShapes": {
     "defaultMessage": "Convert to Shapes"
   },
@@ -1577,20 +1634,74 @@
   "managedStreetSidebar.convertToShapesTitle": {
     "defaultMessage": "Convert Street to Shapes?"
   },
-  "managedStreetSidebar.downloadJSON": {
-    "defaultMessage": "Download Street JSON"
+  "managedStreetSidebar.createdIn": {
+    "defaultMessage": "Created in"
   },
-  "managedStreetSidebar.followPathHint": {
-    "defaultMessage": "This street follows a path — length tracks the path, and curve style (smooth / arc / linear) is set on the path shape."
+  "managedStreetSidebar.drawNewPath": {
+    "defaultMessage": "Draw a new path"
   },
-  "managedStreetSidebar.followPathNone": {
-    "defaultMessage": "None (straight)"
+  "managedStreetSidebar.flattenSentence": {
+    "defaultMessage": "Flatten terrain under street"
+  },
+  "managedStreetSidebar.flattening": {
+    "defaultMessage": "Flattening"
+  },
+  "managedStreetSidebar.importedFrom": {
+    "defaultMessage": "Imported from"
+  },
+  "managedStreetSidebar.length": {
+    "defaultMessage": "Length"
+  },
+  "managedStreetSidebar.openInSource": {
+    "defaultMessage": "Open in {source}"
+  },
+  "managedStreetSidebar.path": {
+    "defaultMessage": "Path"
+  },
+  "managedStreetSidebar.pathHintFollows": {
+    "defaultMessage": "Length follows the path. Curve style is set on the shape."
+  },
+  "managedStreetSidebar.pathHintPick": {
+    "defaultMessage": "Pick a drawn shape with 2+ points, or draw one."
+  },
+  "managedStreetSidebar.pathPoints": {
+    "defaultMessage": "{count,plural,one{# point} other{# points}}"
+  },
+  "managedStreetSidebar.play": {
+    "defaultMessage": "Play"
+  },
+  "managedStreetSidebar.playSentence": {
+    "defaultMessage": "Animate traffic in Play"
   },
   "managedStreetSidebar.reloadConfirm": {
     "defaultMessage": "Reload this street from {source}? Local segment edits will be lost."
   },
-  "managedStreetSidebar.reloadFromSource": {
-    "defaultMessage": "Reload from {source}"
+  "managedStreetSidebar.reloadFromSourceTitle": {
+    "defaultMessage": "Reload from {source} — replaces local edits"
+  },
+  "managedStreetSidebar.savedWithScene": {
+    "defaultMessage": "Saved with this scene"
+  },
+  "managedStreetSidebar.shape": {
+    "defaultMessage": "Shape"
+  },
+  "managedStreetSidebar.shapeFollowPath": {
+    "defaultMessage": "follow path"
+  },
+  "managedStreetSidebar.shapeStraight": {
+    "defaultMessage": "straight"
+  },
+  "managedStreetSidebar.show": {
+    "defaultMessage": "Show"
+  },
+  "managedStreetSidebar.streetJSON": {
+    "defaultMessage": "Street JSON"
+  },
+  "managedStreetSidebar.tapLane": {
+    "defaultMessage": "Tap a lane to edit it"
+  },
+  "managedStreetSidebar.toShapes": {
+    "defaultMessage": "To shapes…"
   },
   "modalTextures.back": {
     "defaultMessage": "BACK"
@@ -2075,17 +2186,32 @@
   "screenshotModal.upgradeToPro": {
     "defaultMessage": "Upgrade to Pro to hide 3DStreet Free watermark"
   },
-  "segmentSidebar.boundaryVariant": {
-    "defaultMessage": "Boundary Variant"
-  },
-  "segmentSidebar.color": {
-    "defaultMessage": "Color"
+  "segmentSidebar.advanced": {
+    "defaultMessage": "Advanced"
   },
   "segmentSidebar.direction": {
     "defaultMessage": "Direction"
   },
+  "segmentSidebar.directionNone": {
+    "defaultMessage": "none"
+  },
+  "segmentSidebar.editStreet": {
+    "defaultMessage": "Edit street"
+  },
   "segmentSidebar.elevation": {
     "defaultMessage": "Elevation"
+  },
+  "segmentSidebar.elevationMean": {
+    "defaultMessage": "avg {value}"
+  },
+  "segmentSidebar.elevationMeanTitle": {
+    "defaultMessage": "Mean of the two slope edges"
+  },
+  "segmentSidebar.inbound": {
+    "defaultMessage": "inbound"
+  },
+  "segmentSidebar.material": {
+    "defaultMessage": "Material"
   },
   "segmentSidebar.moveLeft": {
     "defaultMessage": "Move Left"
@@ -2093,8 +2219,8 @@
   "segmentSidebar.moveRight": {
     "defaultMessage": "Move Right"
   },
-  "segmentSidebar.segmentType": {
-    "defaultMessage": "Segment Type"
+  "segmentSidebar.outbound": {
+    "defaultMessage": "outbound"
   },
   "segmentSidebar.side": {
     "defaultMessage": "Side"
@@ -2102,11 +2228,14 @@
   "segmentSidebar.slope": {
     "defaultMessage": "Slope"
   },
-  "segmentSidebar.slopeEnd": {
-    "defaultMessage": "End Edge"
+  "segmentSidebar.stripSummary": {
+    "defaultMessage": "{count,plural,one{# segment} other{# segments}}"
   },
-  "segmentSidebar.slopeStart": {
-    "defaultMessage": "Start Edge"
+  "segmentSidebar.type": {
+    "defaultMessage": "Type"
+  },
+  "segmentSidebar.variant": {
+    "defaultMessage": "Variant"
   },
   "segmentSidebar.width": {
     "defaultMessage": "Width"
@@ -2258,14 +2387,23 @@
   "sidebar.geoloc": {
     "defaultMessage": "GeoLoc"
   },
+  "sidebar.geolocSwitchToPosition": {
+    "defaultMessage": "Click to show position instead."
+  },
   "sidebar.geolocTitle": {
     "defaultMessage": "Latitude, longitude, true bearing (degrees clockwise from true north, “T”). Read-only: edit position and rotation to change it."
   },
   "sidebar.managedBy": {
     "defaultMessage": "Managed by"
   },
+  "sidebar.positionSwitchToGeoloc": {
+    "defaultMessage": "Click to show geolocated position (lat/lon) instead."
+  },
   "sidebar.selectObject": {
     "defaultMessage": "Select an object to edit properties."
+  },
+  "sidebar.transform": {
+    "defaultMessage": "Transform"
   },
   "signInModal.message": {
     "defaultMessage": "Sign in to save and share scenes."
@@ -2370,7 +2508,7 @@
     "defaultMessage": "Rename layers by clicking on the layer, then the Rename button in the right-hand properties panel"
   },
   "userLayers.tipVisibility": {
-    "defaultMessage": "Toggle layer visibility by using the switch on the left on each row of the layers panel"
+    "defaultMessage": "Toggle layer visibility with the eye icon that appears on the right when hovering a row of the layers panel"
   },
   "userLayers.tipsHeading": {
     "defaultMessage": "Tips"
@@ -2386,6 +2524,9 @@
   },
   "viewer.editingCopyWarning": {
     "defaultMessage": "This is an unsaved copy. Click Save to make your own copy."
+  },
+  "viewer.hotspotBack": {
+    "defaultMessage": "Back"
   },
   "viewer.pause": {
     "defaultMessage": "Pause"
@@ -2440,5 +2581,23 @@
   },
   "viewer.stop": {
     "defaultMessage": "Stop"
+  },
+  "viewerStart.preview": {
+    "defaultMessage": "Preview Start"
+  },
+  "viewerStart.previewTitle": {
+    "defaultMessage": "Fly the camera to this start point now"
+  },
+  "viewerStart.removeConfirm": {
+    "defaultMessage": "Remove the Starting View? Visitors will open the scene at the default view instead."
+  },
+  "viewerStart.setToCurrentView": {
+    "defaultMessage": "Set To Current View"
+  },
+  "viewerStart.setToCurrentViewTitle": {
+    "defaultMessage": "Move this start point to the current editor camera position and direction"
+  },
+  "viewerStart.tip": {
+    "defaultMessage": "💡 Visitors open the scene from this view and Start flies here. Setting a scene thumbnail also moves it to the captured view. The marker is only visible while editing; you still edit from wherever you left off."
   }
 }

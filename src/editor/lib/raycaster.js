@@ -1,9 +1,7 @@
 import Events from './Events';
-import {
-  isExperimentalNav,
-  isStreetLevelNav
-} from './nav-experimental/flag.js';
+import { isStreetLevelNav } from './nav-experimental/flag.js';
 import { captureNavDiscovery } from './navAnalytics.js';
+import { resolveClickSelection } from './cascadingSelection.js';
 
 export function initRaycaster(inspector) {
   // Use cursor="rayOrigin: mouse".
@@ -52,27 +50,15 @@ export function initRaycaster(inspector) {
 
   function getIntersectedEl() {
     const batched = getBatchedIntersectedEl();
-    let intersectedEl =
+    const intersectedEl =
       batched !== undefined
         ? batched
         : mouseCursor.components.cursor.intersectedEl;
-    // The user needs to click on the street-segment first to then select a car or pedestrian.
-    if (
-      intersectedEl !== null &&
-      intersectedEl.parentElement?.hasAttribute('street-segment')
-    ) {
-      // If the street-segment is already selected, return the intersected el.
-      // If a child of the same street-segment is already selected, return the intersected el.
-      if (
-        inspector.selectedEntity === intersectedEl.parentElement ||
-        inspector.selectedEntity?.parentElement === intersectedEl.parentElement
-      ) {
-        return intersectedEl;
-      }
-      // Otherwise, return the street-segment.
-      return intersectedEl.parentElement;
-    }
-    return intersectedEl;
+    // Figma-style cascading selection (epic #1720): resolve one step down
+    // the intersected entity's ancestor chain per click — street, then
+    // segment, then child — see cascadingSelection.js. Hover previews the
+    // same resolution, so the hover box always shows what a click selects.
+    return resolveClickSelection(intersectedEl, inspector.selectedEntity);
   }
 
   // Poll the raycaster's closest intersection each check and fire hover events when the
@@ -122,6 +108,14 @@ export function initRaycaster(inspector) {
     // be stale (the previous click's value). evt.detail.mouseEvent is
     // the originating mouseup; reading from it is order-independent.
     const upEvt = evt && evt.detail && evt.detail.mouseEvent;
+    // MouseEvent.detail is the browser's click count: 1 for a fresh click,
+    // 2+ for the later clicks of a double/triple-click. Only the first click
+    // cascades the selection one level; the second click of a dblclick is
+    // the user asking to focus what that first click selected, not to drill
+    // further (see onDoubleClick).
+    if (upEvt && upEvt.detail > 1) {
+      return;
+    }
     const up = upEvt
       ? new THREE.Vector2(upEvt.clientX, upEvt.clientY)
       : onUpPosition;
@@ -155,32 +149,36 @@ export function initRaycaster(inspector) {
   /**
    * Focus on double click.
    *
-   * TASK-012 Phase 4: with the experimental nav flag on, the canvas
+   * TASK-012 Phase 4: with the street-level flag on, the canvas
    * double-click NAVIGATES (a cursor-aware camera teleport) instead of
    * framing the entity. Emit a new event carrying the cursor coords; the
    * controls classify what's under the cursor from the live cursor raycast
    * (incl. empty-space → Category D), so we must NOT early-return on a missing
-   * intersect when the flag is on. Flag-off keeps the legacy objectfocus path.
+   * intersect when the flag is on. Flag-off keeps the objectfocus path.
    * Only this canvas dblclick reroutes — F-key / scene-tree / sidebar
-   * objectfocus callers still run the legacy frame-this-entity animation.
+   * objectfocus callers still run the frame-this-entity animation.
    *
    * The teleport ships with the street-level featureset (?streetview=on);
-   * gated off, double-click keeps the legacy frame-the-entity behaviour
-   * (deploy-at-parity).
+   * gated off, double-click keeps the frame-the-entity behaviour.
    */
   function onDoubleClick(event) {
-    if (isExperimentalNav() && isStreetLevelNav()) {
+    if (isStreetLevelNav()) {
       Events.emit('nav-experimental:doubleclick', {
         clientX: event.clientX,
         clientY: event.clientY
       });
       return;
     }
-    const intersectedEl = getIntersectedEl();
-    if (!intersectedEl) {
+    // The first click of this dblclick already cascaded the selection one
+    // level (street → segment → child); the second click was ignored by
+    // handleClick. Focus the entity that first click selected, so a quick
+    // double-click on a street frames the street rather than drilling into
+    // whatever sits under the cursor.
+    const selected = inspector.selectedEntity;
+    if (!selected) {
       return;
     }
-    Events.emit('objectfocus', intersectedEl.object3D);
+    Events.emit('objectfocus', selected.object3D);
   }
 
   return {

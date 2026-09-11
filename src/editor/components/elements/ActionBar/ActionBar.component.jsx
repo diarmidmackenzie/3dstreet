@@ -19,6 +19,7 @@ import {
 import { useShapeDrawTool } from './ShapeDrawAction.jsx';
 import { TransformModeMenu } from './TransformModeMenu.jsx';
 import { isEasyGizmo } from '../../../lib/gizmos/easyGizmoFlag.js';
+import { isManagedStreetSegment } from '../../../lib/entity';
 import { commonMessages } from '@/editor/i18n/commonMessages';
 
 // Read at module eval, like the shortcut map's own flags: the flag is decided
@@ -42,9 +43,12 @@ const ActionBar = ({ selectedEntity }) => {
   // buttons stay clickable so the user can still switch translate/rotate
   // with such an entity selected — the gizmo layer independently refuses to
   // attach to no-transform entities — and render dimmed (not disabled) to
-  // signal the CURRENT SELECTION can't be transformed.
+  // signal the CURRENT SELECTION can't be transformed. A managed street's
+  // segments dim the same way (#1806): street-align owns segment transforms,
+  // so the gizmo layer gives them width bars only, no move/rotate gizmo.
   const selectionNotTransformable =
-    !!selectedEntity?.hasAttribute('data-no-transform');
+    !!selectedEntity?.hasAttribute('data-no-transform') ||
+    isManagedStreetSegment(selectedEntity);
 
   // The shape draw tool owns its own canvas listeners + preview via this hook,
   // active whenever the 'shape' tool is selected.
