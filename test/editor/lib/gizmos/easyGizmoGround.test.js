@@ -237,10 +237,22 @@ describe('the sampler and its budget', () => {
     // There is no early stop, so the cost is a function of the frame's length
     // and of nothing in the scene. This is the check that one has not been
     // reintroduced.
-    const result = run(1.0);
+    let flatCasts = 0;
+    let brokenCasts = 0;
+    const result = run(1.0, () => {
+      flatCasts++;
+      return flat();
+    });
+    const broken = run(1.0, () => {
+      brokenCasts++;
+      return { below: { y: -3 } };
+    });
     expect(result.demanded).toBe(4);
     expect(result.cast).toBe(4);
     expect(result.continuous).toBe(true);
+    expect(broken.continuous).toBe(false);
+    expect(brokenCasts).toBe(flatCasts);
+    expect(brokenCasts).toBe(result.demanded + 1);
   });
 
   it('demands the ceiling of the span over the sub-span, less one', () => {
@@ -259,10 +271,8 @@ describe('the sampler and its budget', () => {
     expect(1.0 - last.x).toBeLessThan(SUBSTEP_METRES);
   });
 
-  it('declares an over-budget frame discontinuous without casting anything', () => {
-    // The outcome is fixed before the first ray, so spending the budget on it
-    // buys nothing — and a build that casts the budget and only then gives up
-    // passes every other assertion here.
+  it('declares an over-budget frame discontinuous with only the endpoint ray', () => {
+    // No interiors; the endpoint is still required for current landing targets.
     let casts = 0;
     const counting = (x, z) => {
       casts++;
@@ -272,7 +282,7 @@ describe('the sampler and its budget', () => {
     expect(result.overBudget).toBe(true);
     expect(result.continuous).toBe(false);
     expect(result.cast).toBe(0);
-    expect(casts).toBe(0);
+    expect(casts).toBe(1);
     expect(result.supportY).toBe(0);
   });
 

@@ -8,9 +8,8 @@
 // silently skipped.
 //
 // The gizmo owns its own ProbeTargets instance rather than borrowing the
-// navigation controller's: the instance is per-object with no module state and
-// disposes cleanly, and owning one is what makes the gizmo work under classic
-// navigation, where no nav controller and therefore no nav target cache exists.
+// navigation controller's: the instance has its own cache and lifetime, so
+// placement does not depend on navigation initialization or teardown order.
 
 import {
   intersectProbeTargets,
@@ -44,7 +43,7 @@ export class EasyGizmoProbe {
      */
     this.lastHits = [];
     this._qualifying = this.lastHits;
-    /** Set by the gizmo for the duration of a gesture; hits inside this
+    /** Set while attached; hits inside this
      * entity's subtree are not surfaces it can rest on. */
     this.excludeEl = null;
   }
@@ -62,7 +61,10 @@ export class EasyGizmoProbe {
    */
   probeColumn(x, z, baseY) {
     const empty = { below: null, above: null };
-    if (!this.sceneEl) return empty;
+    if (!this.sceneEl) {
+      this.lastHits.length = 0;
+      return empty;
+    }
     this._origin.set(x, baseY + PROBE_UP_MARGIN_METRES, z);
     this.raycaster.set(this._origin, this._direction);
     const hits = intersectProbeTargets(this.raycaster, {

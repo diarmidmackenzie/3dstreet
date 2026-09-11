@@ -33,14 +33,7 @@ const TransformModeMenu = ({
 }) => {
   const intl = useIntl();
   const [open, setOpen] = useState(false);
-  // `transformMode` has four reachable values: the hand and shape tools both
-  // set it to 'off', and 'scale' is reachable from the keyboard, and both
-  // overwrite the one field — so there is no "last transform mode" anywhere to
-  // draw. The trigger keeps the last mode it CAN represent and shows it
-  // un-highlighted in the other two, because a blanked trigger in the state
-  // after two of the commonest toolbar clicks reads as a broken control, and
-  // "not highlighted" already means "not currently active" everywhere else on
-  // this bar.
+  // Keep the last representable mode while hand, shape or scale is active.
   const [lastMode, setLastMode] = useState('translate');
 
   useEffect(() => {

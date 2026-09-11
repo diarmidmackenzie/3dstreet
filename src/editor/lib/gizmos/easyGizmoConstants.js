@@ -175,10 +175,9 @@ export const CHEVRON_MAX = 8;
 /** One full slide of the chevron stack on hover, in milliseconds. */
 export const CHEVRON_CYCLE_MS = 900;
 
-/** Chevron size, as fractions of S. Fixed: the stack is a different element at
- * a different height from the move square and makes its own decisions. */
-export const CHEVRON_BASE_FRAC = 0.25;
-export const CHEVRON_LEN_FRAC = 0.2;
+/** Fixed world dimensions, independent of move-square size and regime. */
+export const CHEVRON_BASE_METRES = 0.25;
+export const CHEVRON_LEN_METRES = 0.2;
 
 // --- drag models ---------------------------------------------------------
 

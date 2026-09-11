@@ -71,7 +71,7 @@ export const Shortcuts = {
     }
 
     // m: easy-mode move/rotate gizmo
-    if (easyGizmo && keyCode === 77) {
+    if (easyGizmo && keyCode === 77 && AFRAME.INSPECTOR.easyGizmoControls) {
       Events.emit('transformmodechange', 'easy');
     }
 

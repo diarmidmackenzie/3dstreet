@@ -38,6 +38,7 @@ import {
   latchByHysteresis,
   lerp,
   chevronLayout,
+  lastVisiblePointOnSegment,
   squareSideMetres
 } from './easyGizmoMath.js';
 import {
@@ -62,9 +63,9 @@ import {
   ARC_STEP_DEG,
   ARC_TUBE_RADIUS,
   ARC_TUBULAR_SEGMENTS,
-  CHEVRON_BASE_FRAC,
+  CHEVRON_BASE_METRES,
   CHEVRON_CYCLE_MS,
-  CHEVRON_LEN_FRAC,
+  CHEVRON_LEN_METRES,
   CHEVRON_MAX,
   CHEVRON_SPACING_FRAC,
   COLOR_MOVE,
@@ -145,6 +146,8 @@ const _qA = new THREE.Quaternion();
 const _qB = new THREE.Quaternion();
 const _qZ = new THREE.Quaternion();
 const _right = new THREE.Vector3();
+const _edgePoint = new THREE.Vector3();
+const _edgeProjection = new THREE.Vector3();
 
 /**
  * Orient a flat arrowhead: apex along `dir`, lying in the plane whose normal is
@@ -172,7 +175,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     // The base class's third argument is Object3D.name, so it must be a string
     // — passing the scene element through would make an Object3D's name a DOM
     // node.
-    super(camera, domElement, 'easyGizmoControls');
+    super(camera, domElement, 'gizmoPrototypeEasyControls');
 
     this.sceneEl = sceneEl;
     this.el = undefined;
@@ -180,7 +183,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     this.probe = new EasyGizmoProbe(sceneEl);
     this.registry.add(this.probe);
 
-    // Derived from the object, refreshed per frame and on model-loaded.
+    // Cached local bounds; pose-derived values are refreshed each frame.
     this.localBox = null;
     this.squareSide = 1;
     this.baseY = 0;
@@ -243,6 +246,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     this._lastProcessedXZ = { x: 0, z: 0 };
     this._frameToken = null;
     this._landingPress = null;
+    this._releasePending = null;
 
     // Pointer-layer state.
     this._armed = false;
@@ -250,7 +254,6 @@ class EasyGizmoControls extends GizmoPointerControls {
     this._pointerId = null;
     this._lastPointerType = 'mouse';
     this._wasOpen = false;
-    this._lastProbeMs = 0;
 
     this._bindHandlers();
     this._build();
@@ -268,13 +271,23 @@ class EasyGizmoControls extends GizmoPointerControls {
      */
     this.pathEvaluationEnabled = true;
 
-    this._onEntityUpdate = () => {
-      if (this.el && !this.isDragging) this._refreshSupport();
+    this._onEntityUpdate = (detail) => {
+      if (this.el && !this.isDragging && this._inspectorOpen()) {
+        if (detail?.entity === this.el) this.deriveLocalBox();
+        this._refreshSupport();
+      }
     };
     // Bound once rather than per frame: the path evaluator takes the probe as
     // an argument, which is what keeps its own module free of raycasting.
-    this._probeBaseY = 0;
-    this._probeAt = (x, z) => this.probe.probeColumn(x, z, this._probeBaseY);
+    this._probeAt = (x, z, referenceY) =>
+      this.probe.probeColumn(x, z, referenceY);
+    this._onGeometryChanged = () => {
+      if (!this.el) return;
+      // The old press clearance no longer describes the edited geometry.
+      if (this.isDragging) this.endGesture('geometrychanged');
+      this.deriveLocalBox();
+      this._refreshSupport();
+    };
   }
 
   /**
@@ -590,9 +603,7 @@ class EasyGizmoControls extends GizmoPointerControls {
 
   // --- attach / detach --------------------------------------------------
 
-  /** Does this gizmo take the entity at all? Where it declines, the router
-   * falls back to the stock gizmo rather than leaving the selection with
-   * nothing. */
+  /** Whether the selection supports easy move/rotate; managed lanes use width bars. */
   accepts(el) {
     if (!el || !el.object3D) return false;
     if (el.hasAttribute('data-no-transform')) return false;
@@ -618,21 +629,27 @@ class EasyGizmoControls extends GizmoPointerControls {
     this.object = el.object3D;
     this.visible = true;
     this.probe.excludeEl = el;
-    this._lastProbeMs = 0;
     this._landingDownShown = false;
     this._landingUpShown = false;
     this._dodgeLatches = null;
     this._dodgeHeld = null;
     this._dodgeRelease = null;
-    this._seedRegime();
     this.deriveLocalBox();
+    this._updateBase();
+    this._seedRegime();
+    this._refreshSupport();
     // A glTF that has not loaded has no box, so the base would fall back to the
     // object's origin. Re-derive when the model arrives, plus the short settle
     // the selection box already waits for.
     el.addEventListener('model-loaded', this._onModelLoaded);
+    el.addEventListener('shape-geometry-changed', this._onGeometryChanged);
+    el.addEventListener('segments-changed', this._onGeometryChanged);
+    el.addEventListener('alignment-changed', this._onGeometryChanged);
     Events.on('entityupdate', this._onEntityUpdate);
     this._idleTimer = setInterval(() => {
-      if (this.el && !this.isDragging) this._refreshSupport();
+      if (this.el && !this.isDragging && this._inspectorOpen()) {
+        this._refreshSupport();
+      }
     }, IDLE_PROBE_INTERVAL_MS);
     this._addListeners();
     return this;
@@ -644,12 +661,16 @@ class EasyGizmoControls extends GizmoPointerControls {
    */
   detach() {
     if (!this.el) return this;
-    // The gesture ends BEFORE the listeners come off. Ending it arms the
-    // swallow of the trailing synthetic click; with the listeners already gone
-    // that window would be armed with nothing left to consume it, and the click
-    // would reach the canvas and reselect whatever is under the gizmo.
+    // Restore a live gesture while its entity is still attached.
     if (this.isDragging) this.endGesture('detach');
     this.el.removeEventListener('model-loaded', this._onModelLoaded);
+    this.el.removeEventListener(
+      'shape-geometry-changed',
+      this._onGeometryChanged
+    );
+    this.el.removeEventListener('segments-changed', this._onGeometryChanged);
+    this.el.removeEventListener('alignment-changed', this._onGeometryChanged);
+    clearTimeout(this._modelSettleTimer);
     Events.off('entityupdate', this._onEntityUpdate);
     if (this._idleTimer) {
       clearInterval(this._idleTimer);
@@ -662,6 +683,8 @@ class EasyGizmoControls extends GizmoPointerControls {
     this.visible = false;
     this.axis = null;
     this.highlight(null);
+    this.dispatchEvent({ type: 'axisHoverChange', axis: null });
+    if (this.domElement) this.domElement.style.cursor = null;
     this.localBox = null;
     this.supportY = null;
     this.landingDownY = null;
@@ -688,10 +711,9 @@ class EasyGizmoControls extends GizmoPointerControls {
 
   _onModelLoaded(event) {
     if (!this.el || event.target !== this.el) return;
-    setTimeout(() => {
-      if (!this.el) return;
-      this.deriveLocalBox();
-    }, 20);
+    this._onGeometryChanged();
+    clearTimeout(this._modelSettleTimer);
+    this._modelSettleTimer = setTimeout(this._onGeometryChanged, 20);
   }
 
   deriveLocalBox() {
@@ -710,22 +732,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     return !!AFRAME.INSPECTOR?.opened;
   }
 
-  /**
-   * Twelve registrations, all armed here and all removed in _removeListeners.
-   *
-   * Rows on window at CAPTURE, because a peer already bound to the canvas does
-   * not yield to a listener added later on the same element even with capture —
-   * only an ancestor capture listener runs first. The mouse and touch families
-   * are listed alongside the pointer one because a physical press arrives as up
-   * to three independently dispatched families, and stopping one does nothing
-   * to the others; the A-Frame cursor listens to the MOUSE family, which is why
-   * suppressing it is what stops a press falling through to selection.
-   *
-   * What this cannot do is silence a PEER at the same node and phase — the
-   * shape-vertex layer arms the same window-capture set. That is accepted
-   * rather than fought: this gizmo owns its own suppression and reaches into no
-   * other layer.
-   */
+  /** Claim before canvas listeners; see docs/easy-gizmo.md#pointer-ownership. */
   _addListeners() {
     if (this._armed) return;
     this._armed = true;
@@ -733,6 +740,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     window.addEventListener('pointermove', this._onPointerMove, true);
     window.addEventListener('pointerup', this._onPointerUp, true);
     window.addEventListener('pointercancel', this._onPointerCancel, true);
+    window.addEventListener('lostpointercapture', this._onLostCapture, true);
     window.addEventListener('mousedown', this._onSuppressClaimed, true);
     // The options form is required: a window touch listener is passive by
     // default, where preventDefault() does nothing and logs on every touch.
@@ -756,6 +764,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     window.removeEventListener('pointermove', this._onPointerMove, true);
     window.removeEventListener('pointerup', this._onPointerUp, true);
     window.removeEventListener('pointercancel', this._onPointerCancel, true);
+    window.removeEventListener('lostpointercapture', this._onLostCapture, true);
     window.removeEventListener('mousedown', this._onSuppressClaimed, true);
     // Removal keys on the capture flag alone, so `true` matches the options
     // form the add side uses.
@@ -765,8 +774,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     window.removeEventListener('blur', this._onBlur);
     const canvas = this._canvas();
     if (canvas) canvas.removeEventListener('mouseleave', this._onCanvasLeave);
-    // Last, so a gesture ended just above still has its trailing synthetic
-    // click and double-click swallowed.
+    // Suppression is scoped to the attachment, like the press listeners.
     window.removeEventListener('click', this._onSuppressLatched, true);
     window.removeEventListener('dblclick', this._onSuppressLatched, true);
   }
@@ -808,6 +816,10 @@ class EasyGizmoControls extends GizmoPointerControls {
   }
 
   _onPointerDown(event) {
+    if (this.isDragging || this._releasePending) {
+      this._suppress(event);
+      return;
+    }
     // Cleared on every press this listener sees, ahead of every return below,
     // so the trailing-click latch can never outlive the gesture it was set for.
     this._pressWasClaimed = false;
@@ -857,15 +869,17 @@ class EasyGizmoControls extends GizmoPointerControls {
       this.dispatchEvent({ type: 'axisHoverChange', axis });
     }
     if (this.startDrag(axis, event) === false) return;
+    // Ownership is independent of whether native capture is available.
+    this._pointerId = event.pointerId ?? null;
     if (canvas && canvas.setPointerCapture && event.pointerId !== undefined) {
       try {
         canvas.setPointerCapture(event.pointerId);
-        this._pointerId = event.pointerId;
       } catch {
-        this._pointerId = null;
+        // Window listeners still track only the pointer that claimed the drag.
       }
     }
     this.isDragging = true;
+    this.highlight(axis);
     this.dispatchEvent(this.mouseDownEvent);
     this.dispatchEvent(this.changeEvent);
   }
@@ -873,11 +887,9 @@ class EasyGizmoControls extends GizmoPointerControls {
   /**
    * Whether another editing affordance for this entity is under the cursor.
    *
-   * The shape-vertex layer is asked directly. The street node and segment-width
-   * handles co-attach on a managed street, which this gizmo also takes, so they
-   * are asked too — the plan's general rule is that an existing affordance wins
-   * the press, and a rule naming a control the gizmo cannot reach is not a
-   * rule. All three are read and never written.
+   * Existing shape and street affordances win when visible under the pointer.
+   * Managed lanes normally route to width controls alone; querying visible
+   * peers also covers selection transitions without changing their state.
    */
   _otherAffordanceUnder(event) {
     const inspector = typeof AFRAME === 'undefined' ? null : AFRAME.INSPECTOR;
@@ -907,7 +919,9 @@ class EasyGizmoControls extends GizmoPointerControls {
 
   _onPointerMove(event) {
     if (!this.el || !this.object || !this.enabled) return;
+    if (this._releasePending) return;
     if (this.isDragging) {
+      if (!this._ownsPointer(event)) return;
       this._suppress(event);
       this.updateMouse(event);
       this._trackDrag(event);
@@ -924,6 +938,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     // Touch has no hover, and a control drawn beneath a panel must not light up
     // and then refuse the click.
     const hoverable = onCanvas && (event.pointerType || 'mouse') === 'mouse';
+    this._lastPointerType = event.pointerType || 'mouse';
     let axis = null;
     if (hoverable) {
       this.updateMouse(event);
@@ -942,16 +957,35 @@ class EasyGizmoControls extends GizmoPointerControls {
   }
 
   _onPointerUp(event) {
-    if (!this.isDragging) return;
+    if (!this.isDragging || !this._ownsPointer(event)) return;
     this._suppress(event);
+    if (this._releasePending) return;
     this.updateMouse(event);
-    this.endGesture('pointerup', event);
+    this._trackDrag(event);
+    if (this.axis === 'move') {
+      // Finish on the next frame token, so release never spends a second
+      // path-probe budget in the frame that already processed a pointermove.
+      this._releasePending = { reason: 'pointerup', event };
+    } else {
+      this.endGesture('pointerup', event);
+    }
   }
 
-  _onPointerCancel() {
-    if (!this.isDragging) return;
+  _ownsPointer(event) {
+    return (event.pointerId ?? null) === this._pointerId;
+  }
+
+  _onPointerCancel(event) {
+    if (!this.isDragging || !this._ownsPointer(event)) return;
     this.endGesture('pointercancel');
   }
+
+  _onLostCapture = (event) => {
+    // Browsers release capture after pointerup, before the queued frame runs.
+    if (this.isDragging && this._ownsPointer(event) && !this._releasePending) {
+      this.endGesture('pointercancel');
+    }
+  };
 
   _onBlur() {
     if (!this.isDragging) return;
@@ -960,7 +994,12 @@ class EasyGizmoControls extends GizmoPointerControls {
 
   _onCanvasLeave() {
     if (!this.isDragging) return;
-    this.endGesture('mouseleave');
+    if (this._releasePending) return;
+    if (this.axis === 'move') {
+      this._releasePending = { reason: 'mouseleave' };
+    } else {
+      this.endGesture('mouseleave');
+    }
   }
 
   /**
@@ -1070,12 +1109,17 @@ class EasyGizmoControls extends GizmoPointerControls {
         flatness: this.landingUpGroup.userData.faceAmount
       }
     ];
-    const someActive = groups.some((g) => g.group.userData.gizmoAxis === axis);
+    const mouse = this._lastPointerType === 'mouse';
+    const pressed = this._landingPress;
+    const activeAxis = pressed && !pressed.armed ? null : axis;
+    const someActive =
+      mouse && groups.some((g) => g.group.userData.gizmoAxis === activeAxis);
 
     groups.forEach(({ group, slot, flatness }) => {
-      const active = group.userData.gizmoAxis === axis;
+      const active = group.userData.gizmoAxis === activeAxis;
       let level = OPACITY_REST;
-      if (active) level = OPACITY_HOVER;
+      if (active && this.isDragging) level = OPACITY_ACTION;
+      else if (active && mouse) level = OPACITY_HOVER;
       else if (someActive) level = OPACITY_DIM;
       const opacity = Math.min(level + OPACITY_FLAT_BOOST * flatness, 1);
       if (slot.flat) slot.flat.opacity = opacity;
@@ -1094,7 +1138,8 @@ class EasyGizmoControls extends GizmoPointerControls {
     [this.landingDownGroup, this.landingUpGroup].forEach((group) => {
       const own = group.userData.gizmoAxis;
       const engaged =
-        own === axis || (this._landingPress && this._landingPress.axis === own);
+        (mouse && own === activeAxis) ||
+        (pressed && pressed.armed && pressed.axis === own);
       const base = engaged
         ? OPACITY_ACTION
         : someActive
@@ -1124,7 +1169,13 @@ class EasyGizmoControls extends GizmoPointerControls {
     this._checkEditorClosedEdge();
     if (this.el && this.object && this.object.parent && this._inspectorOpen()) {
       this._layoutFrame();
-      if (this._frameChanged()) this._advance();
+      if (this._frameChanged()) {
+        this._advance();
+        if (this._releasePending) {
+          const { reason, event } = this._releasePending;
+          this.endGesture(reason, event);
+        }
+      }
     }
     super.updateMatrixWorld(force);
   }
@@ -1168,16 +1219,20 @@ class EasyGizmoControls extends GizmoPointerControls {
     return true;
   }
 
-  _layoutFrame() {
+  _updateBase() {
     this.object.updateWorldMatrix(true, false);
     this.object.matrixWorld.decompose(_p, _q, _s);
-    _e.setFromQuaternion(_q, 'YXZ');
-    const yaw = _e.y;
-
     this.baseY = this.localBox
       ? _box.copy(this.localBox).applyMatrix4(this.object.matrixWorld).min.y
       : _p.y;
     this.baseOffset = this.baseY - _p.y;
+    this._anchor.set(_p.x, this.baseY, _p.z);
+  }
+
+  _layoutFrame() {
+    this._updateBase();
+    _e.setFromQuaternion(_q, 'YXZ');
+    const yaw = _e.y;
 
     // Measured where the user is looking — the square's own position — not at
     // the object's origin. This is also the anchor the regime is decided from,
@@ -1204,13 +1259,16 @@ class EasyGizmoControls extends GizmoPointerControls {
   }
 
   _refreshSupport() {
-    if (!this.object) return;
+    if (!this.object || !this._inspectorOpen()) return;
+    this._updateBase();
     const baseY = this.currentBaseY();
     const column = this.probe.probeColumn(_p.x, _p.z, baseY);
     this._applyColumn(column, baseY);
   }
 
   _applyColumn(column, baseY) {
+    this._landingDownEntity = column.below ? column.below.entity : null;
+    this._landingUpEntity = column.above ? column.above.entity : null;
     this.supportY = column.below ? column.below.y : null;
     this.landingDownY = this._gateLanding(
       column.below ? column.below.y : null,
@@ -1347,10 +1405,7 @@ class EasyGizmoControls extends GizmoPointerControls {
    */
   _seedRegime() {
     this.camera.updateMatrixWorld();
-    // The base is not derived yet on a fresh attach, so seed from the object's
-    // origin; the seed only has to pick the right side of the threshold.
-    this.object.getWorldPosition(_v2);
-    const tilt = Math.abs(this._elevationToDegrees(_v2));
+    const tilt = Math.abs(this._elevationToDegrees(this._anchor));
     this.flat = tilt < REGIME_SEED_DEG;
     this._regimeLatch = this.flat;
     this._shallowAmount = this.flat ? 1 : 0;
@@ -1369,81 +1424,32 @@ class EasyGizmoControls extends GizmoPointerControls {
     return out.normalize();
   }
 
-  /**
-   * The camera-derived frame the flattened presentation aims at.
-   *
-   * LATCHED FOR THE WHOLE GESTURE, both axes. Orbiting mid-drag would otherwise
-   * swing the handle round to the new camera-right while the object kept
-   * travelling along the old one.
-   *
-   * Nothing here reads the object's POSITION — every value is a function of the
-   * camera plus the object's heading, so two objects at opposite edges of the
-   * frame get identical frames. That is what removes the compensating turn a
-   * translate used to need: with the arc's arms meeting along the view axis
-   * rather than at the camera, translating the object changes nothing about the
-   * arc, so the freeze is correct for both gestures.
-   */
+  /** Hold the camera-derived frame during gestures; see docs/easy-gizmo.md#flattened-frame. */
   _refreshShallowFrame(yaw) {
     if (this.isDragging) return;
     this.cameraRight(_camRight);
 
-    // Normalise the target first. The handle is invariant under a half turn —
-    // the plate is square, and the two arrowhead pairs are symmetric — so a
-    // near-half-turn difference between the object's heading and camera-right
-    // would otherwise produce a long sweep to reach a pose a short one reaches
-    // just as well.
+    // Choose the nearest equivalent half-turn of the handle.
     let sy = Math.atan2(_camRight.x, _camRight.z);
     if (Math.cos(sy - yaw) < 0) sy += Math.PI;
     this._shallowYaw = sy;
 
-    // The START is free in quarter turns, because in the round presentation the
-    // plate is square and the four heads sit at ±X and ±Z with equal size and
-    // opacity. Picking the representative nearest the flattened target halves
-    // the worst sweep again.
-    //
-    // ONLY RE-PICKED AT THE ENDPOINTS, and that restriction is the fix rather
-    // than a refinement of it: rounding is a step function, so the chosen
-    // representative jumps a quarter turn whenever the heading passes 45° from
-    // the target. At either endpoint that jump is exactly the invariance above
-    // and is invisible; mid-transition the plate is a rectangle and the ±X
-    // heads are half faded, so the same jump is a visible pop.
-    //
-    // What is latched is the QUARTER TURN, not the angle. Storing the finished
-    // sum would freeze the object's heading into it too, so the square would
-    // stand still through a rotate gesture and jump to the new heading on
-    // release.
+    // Re-pick the quarter-turn offset only at endpoints to avoid transition pops.
     if (this._shallowAmount === 0 || this._shallowAmount === 1) {
       const quarter = Math.PI / 2;
       const d = Math.atan2(Math.sin(sy - yaw), Math.cos(sy - yaw));
       this._roundYawOffset = quarter * Math.round(d / quarter);
     }
 
-    // The strip's long axis is exactly the direction the drag is constrained
-    // to, not a camera-facing basis. Its job is to ADVERTISE that direction,
-    // and in the flattened presentation the camera is within about twenty
-    // degrees of horizontal anyway, so a vertical plate is near enough
-    // camera-facing.
+    // The strip advertises the horizontal drag direction.
     _bx.copy(_camRight);
     _bn.crossVectors(_bx, UP);
     _basis.makeBasis(_bx, UP, _bn);
     this._shallowQuat.setFromRotationMatrix(_basis);
 
-    // THE RING STAYS FLAT IN X–Z, in both presentations. A ring standing in the
-    // screen plane is the picture of a ROLL, and this control only ever yaws.
-    // All that changes is which way round it is turned.
-    //
-    // Along the view axis, not at the camera: aiming the arms' meeting point at
-    // the camera makes the arc's orientation a function of where the object
-    // sits in frame, so panning rotates an off-centre object's arrows while a
-    // centred object's stand still, and neither rotation says anything about
-    // either object.
+    // Keep the ring horizontal and aligned with the view axis to communicate yaw.
     this._shallowArcYaw = Math.atan2(_bn.x, _bn.z);
-    // No half-turn normalisation here, and the asymmetry with the handle's is
-    // deliberate: the handle's flip is exactly invariant, the ring's is not.
-    // The two retracted arcs are invariant under it but their arrowheads sit
-    // either side of the meeting point, which is mirror symmetric — so crossing
-    // the branch would hop both heads to the opposite ends of their arcs, twice
-    // per orbit at street level.
+    // Unlike the handle, the arrowheads are not invariant under a half turn.
   }
 
   // --- layout -----------------------------------------------------------
@@ -1657,6 +1663,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     if (!group.visible) {
       ud.wasVisible = false;
       ud.regimeLatch = null;
+      ud.chevronCount = undefined;
       return;
     }
     group.position.set(worldPos.x, targetY, worldPos.z);
@@ -1741,11 +1748,16 @@ class EasyGizmoControls extends GizmoPointerControls {
     // The stack DIVIDES the gap rather than being laid out from one end, and
     // reaches the whole way: a run that stopped short would read as one
     // triangle floating at the midpoint on the commonest gap of all.
-    const { count, step } = chevronLayout(span, S * CHEVRON_SPACING_FRAC);
-    const headBase = S * CHEVRON_BASE_FRAC;
+    const { count, step } = chevronLayout(
+      span,
+      S * CHEVRON_SPACING_FRAC,
+      ud.chevronCount
+    );
+    ud.chevronCount = count;
+    const headBase = CHEVRON_BASE_METRES;
     // Capped against the STEP, not the span, so they do not run into each other
     // on a short hop.
-    const headLen = Math.min(S * CHEVRON_LEN_FRAC, step * 0.8);
+    const headLen = Math.min(CHEVRON_LEN_METRES, step * 0.8);
 
     // Hovered, or held: the stack slides toward the target. Motion is the one
     // cue for "down" that survives being seen from directly overhead, where
@@ -1756,8 +1768,9 @@ class EasyGizmoControls extends GizmoPointerControls {
     // instant the user's attention arrives on it. On touch it does not run at
     // all, along with every other hover affordance.
     const engaged =
-      (this.axis === ud.gizmoAxis && this._lastPointerType === 'mouse') ||
-      (this._landingPress && this._landingPress.axis === ud.gizmoAxis);
+      this._lastPointerType === 'mouse' &&
+      this.axis === ud.gizmoAxis &&
+      (!this._landingPress || this._landingPress.armed);
     if (engaged) {
       if (ud.slideFrom === undefined || ud.slideFrom === null) {
         ud.slideFrom = now;
@@ -1776,6 +1789,8 @@ class EasyGizmoControls extends GizmoPointerControls {
     this.cameraRight(_right);
     _hd.crossVectors(_right, UP).applyAxisAngle(UP, -yaw);
     _v.set(0, dir, 0);
+    let lastChevron = null;
+    let nearestTarget = Infinity;
     for (let i = 0; i < chevrons.length; i++) {
       const chev = chevrons[i];
       chev.visible = i < count;
@@ -1783,6 +1798,10 @@ class EasyGizmoControls extends GizmoPointerControls {
       let k = (i + 0.5 - phase) % count;
       if (k < 0) k += count;
       const u = k * step;
+      if (u < nearestTarget) {
+        nearestTarget = u;
+        lastChevron = chev;
+      }
       // Fade the ends only while moving, so a chevron recycling from the target
       // back to the object does not pop. At rest they are all solid.
       let fade = 1;
@@ -1797,6 +1816,22 @@ class EasyGizmoControls extends GizmoPointerControls {
       // render black under a lit material.
       aimArrowhead(chev, _v, _hd);
       chev.userData.fade = fade;
+    }
+    // Keep the final direction mark visible when the landing button is outside
+    // the viewport. It remains on the vertical connection and cannot be picked.
+    _edgePoint.set(group.position.x, baseY, group.position.z);
+    _edgeProjection.set(group.position.x, targetY, group.position.z);
+    if (
+      lastChevron &&
+      lastVisiblePointOnSegment(
+        _edgePoint,
+        _edgeProjection,
+        this.camera,
+        _edgePoint
+      )
+    ) {
+      lastChevron.position.y = _edgePoint.y - targetY;
+      lastChevron.userData.fade = 1;
     }
   }
 
@@ -1841,7 +1876,13 @@ class EasyGizmoControls extends GizmoPointerControls {
       // tile streaming in can put a nearer surface between the object and the
       // pressed one — the pointer is still over A target, and the release
       // commits to a destination the user never pressed.
-      this._landingPress = { axis, y: targetY, armed: true };
+      this._landingPress = {
+        axis,
+        y: targetY,
+        armed: true,
+        entity:
+          axis === 'landingUp' ? this._landingUpEntity : this._landingDownEntity
+      };
       return;
     }
 
@@ -1851,13 +1892,14 @@ class EasyGizmoControls extends GizmoPointerControls {
     const baseY = this.currentBaseY();
     _v2.set(_p.x, baseY, _p.z);
     this.dragPlane.setFromNormalAndCoplanarPoint(UP, _v2);
-    if (!this.intersectPlane(this.dragPlane, _v)) {
+    this.dragConstrained = this.flat;
+    if (!this.dragConstrained && !this.intersectPlane(this.dragPlane, _v)) {
       this.dragSnapshot = null;
       return false;
     }
 
     // Latched before the axis branches, because rotation returns early.
-    this.dragConstrained = this.flat;
+    if (this.dragConstrained) _v.copy(_v2);
     if (this.dragConstrained) this.cameraRight(this.shallowDir);
     this._dragStartMouseX = this.mouse.x;
     // Frozen for the gesture: a mouse-locked drag has to hold its scale to stay
@@ -1929,25 +1971,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     return ((this.mouse.x - this._dragStartMouseX) * rect.width) / 2;
   }
 
-  /**
-   * The rotation's mouse lock, MEASURED rather than derived.
-   *
-   * The gesture wants one number: how far, in screen pixels, does the ring's
-   * tangent travel per radian of yaw? Three closed forms for it were each
-   * plausible and each wrong, so this projects instead — turn the calibration
-   * point by a small test angle about the object's vertical axis, project both
-   * poses through the live camera, and divide. Four projections at the press
-   * and nothing per frame, and it cannot be wrong about a term nobody thought
-   * of: where on the ring it is taken, the ring's own depth (it is drawn in
-   * front of the object, so nearer the camera), and how far off the view axis
-   * the object sits all enter the projection for free.
-   *
-   * TAKEN AT THE JOIN BETWEEN THE ARMS, not at the press. The press supplies
-   * the ring's radius and height; its angle is discarded. A ring has one
-   * radius, so the ratio does not depend on where round it you press — pressing
-   * further along an arm no more changes it than touching a gear further from
-   * its centre does.
-   */
+  /** Measure pixels per radian at the arm join; see docs/easy-gizmo.md#projected-rotation-lever. */
   _measureRotateLever() {
     this._dragRotPxPerRad = 0;
     this._dragRotPxPerRadCap = 0;
@@ -2021,13 +2045,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     }
     if (this.axis !== 'move') return;
     if (this._useShallowPointerModel()) {
-      // Horizontal cursor travel converts straight to world metres along
-      // camera-right, so the point under the cursor stays under it and vertical
-      // travel is ignored BY CONSTRUCTION rather than by projection. Solving
-      // the ray against the drag plane and then projecting the result does not
-      // repair it: near eye level the ray grazes the plane, so a pixel of
-      // vertical movement walks the solved point metres toward the horizon and
-      // its component along the drag direction walks with it.
+      // Direct screen travel avoids a grazing plane ray amplifying vertical motion.
       const k = this._shallowDragPixels() * this._dragMpp;
       this._pendingXZ = {
         x: this.dragStartXZ.x + this.shallowDir.x * k,
@@ -2088,7 +2106,6 @@ class EasyGizmoControls extends GizmoPointerControls {
     this._pendingXZ = null;
     const baseY = this.currentBaseY();
     const startY = _p.y;
-    this._probeBaseY = baseY;
     const travelled = Math.hypot(
       target.x - this._lastProcessedXZ.x,
       target.z - this._lastProcessedXZ.z
@@ -2154,6 +2171,14 @@ class EasyGizmoControls extends GizmoPointerControls {
       supportY: result.supportY,
       supportEntity: support && support.entity ? support.entity.id : null,
       S: this.squareSide,
+      gapBelow:
+        this.landingDownY === null
+          ? null
+          : (this.currentBaseY() - this.landingDownY) / this.squareSide,
+      gapAbove:
+        this.landingUpY === null
+          ? null
+          : (this.landingUpY - this.currentBaseY()) / this.squareSide,
       dodgeShift: this._dodge.shift / this.squareSide,
       dodgeFlip: this._dodge.flipArc
     });
@@ -2184,10 +2209,8 @@ class EasyGizmoControls extends GizmoPointerControls {
   /**
    * The single way out of a gesture.
    *
-   * THE COMMIT LIVES ON THE RELEASE PATH ALONE. Every other exit — a cancelled
-   * pointer, a lost window, Escape, a selection change, the editor closing —
-   * puts the object back where the press found it and executes no history
-   * command, ever.
+   * Pointer release commits; mouseleave commits the last tracked move/rotation.
+   * Cancellation, blur, Escape, selection/geometry change and editor close restore.
    */
   endGesture(reason, event) {
     const snapshot = this.dragSnapshot;
@@ -2202,6 +2225,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     this.dragObject = null;
     this.dragConstrained = false;
     this._landingPress = null;
+    this._releasePending = null;
     this._pendingXZ = null;
     this._arcFollowFrom = null;
 
@@ -2220,6 +2244,11 @@ class EasyGizmoControls extends GizmoPointerControls {
 
     if (this._debug) console.log('[easy-gizmo] endGesture', reason);
     this.dispatchEvent(this.mouseUpEvent);
+    if (this._lastPointerType !== 'mouse') {
+      this.axis = null;
+      this.dispatchEvent({ type: 'axisHoverChange', axis: null });
+    }
+    this.highlight(this.axis);
 
     if (!this.el || !snapshot) return;
     if (this.el !== dragEl || this.object !== dragObject) return;
@@ -2228,6 +2257,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     if (!commits) {
       this._restore(snapshot);
       this.dispatchEvent(this.changeEvent);
+      this.dispatchEvent(this.objectChangeEvent);
       return;
     }
 
@@ -2236,10 +2266,29 @@ class EasyGizmoControls extends GizmoPointerControls {
       // with the pointer still over the target that was pressed, and a release
       // anywhere else cancels with no movement and no undo entry.
       if (!landing || !landing.armed || reason !== 'pointerup') return;
+      if (landing.entity && landing.entity.isConnected === false) return;
       const baseY = this.currentBaseY();
+      if (landing.entity) {
+        const column = this.probe.probeColumn(_p.x, _p.z, baseY);
+        const target = axis === 'landingUp' ? column.above : column.below;
+        if (
+          !target ||
+          target.entity !== landing.entity ||
+          Math.abs(target.y - landing.y) > 0.001
+        ) {
+          return;
+        }
+      }
       // X, Z and yaw are unchanged; the base comes to rest on the surface.
       this.setWorldPosition(_p.x, _p.y + (landing.y - baseY), _p.z);
-      this._refreshSupport();
+      if (landing.entity) {
+        this._applyColumn(
+          resplitColumn(this.probe.lastHits, this.currentBaseY()),
+          this.currentBaseY()
+        );
+      } else {
+        this._refreshSupport();
+      }
     }
 
     const pose = this._formatPose(this.el);

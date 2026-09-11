@@ -131,11 +131,8 @@ export function pickSurfaceAbove(hits, refY) {
 /**
  * Split an already-filtered hit list about a different reference height.
  *
- * A translate frame probes the destination column about the base the object
- * had BEFORE it moved, then moves it — so the surfaces the user should see
- * offered as landing targets have to be re-split about the new base. Doing it
- * from the hit list the endpoint probe already produced is what keeps the frame
- * at one endpoint ray instead of two.
+ * Following uses an evolving support ceiling; landing uses the resulting
+ * object base. Reuse the endpoint hits rather than cast a second ray.
  */
 export function resplitColumn(hits, refY) {
   return {
@@ -154,9 +151,9 @@ function supportHeightOf(column) {
  * Is the ground under this frame's travel continuous with the object's current
  * support, and where does that support end up?
  *
- * `probeAt(x, z)` is the injected column probe, which is what keeps this module
- * free of raycasting and lets the evaluator be driven with a stub. `from` and
- * `to` are `{ x, z }`; `fromSupportY` seeds the comparison.
+ * `probeAt(x, z, ceilingY)` selects support no higher than the pairwise
+ * reference plus its allowance. `from` and `to` are `{ x, z }`;
+ * `fromSupportY` seeds the comparison. Landing columns use a separate split.
  *
  * THE COMPARISON IS PAIRWISE AND THE REFERENCE ADVANCES. Each consecutive pair
  * of samples is judged against the allowance for its own sub-span, and an
@@ -191,9 +188,7 @@ export function evaluatePath({
   const overBudget = demanded > budget;
 
   if (overBudget) {
-    // The outcome is fixed before the first ray, so casting into it buys
-    // nothing. Declaring the frame discontinuous holds height, which can
-    // withhold a step but can never invent a leap.
+    // Skip interiors, but keep the destination column current for landing.
     return {
       continuous: false,
       supportY: fromSupportY,
@@ -201,7 +196,7 @@ export function evaluatePath({
       demanded,
       cast: 0,
       overBudget: true,
-      endColumn: null
+      endColumn: probeAt(to.x, to.z, fromSupportY)
     };
   }
 
@@ -214,38 +209,37 @@ export function evaluatePath({
   let reference = fromSupportY;
   let prev = from;
   let endColumn = null;
+  let continuous = true;
   const stops = samples.concat([to]);
   for (let i = 0; i < stops.length; i++) {
     const at = stops[i];
-    const column = probeAt(at.x, at.z);
+    const subSpan = Math.hypot(at.x - prev.x, at.z - prev.z);
+    // Following may step UP from the preceding support. Landing targets use
+    // a separate split about the object's base after the move.
+    const column = probeAt(
+      at.x,
+      at.z,
+      reference + continuityAllowance(subSpan)
+    );
     if (i === stops.length - 1) endColumn = column;
     const y = supportHeightOf(column);
     if (y === null) {
       prev = at;
       continue;
     }
-    const subSpan = Math.hypot(at.x - prev.x, at.z - prev.z);
     if (
       reference !== null &&
       Math.abs(y - reference) > continuityAllowance(subSpan)
     ) {
-      return {
-        continuous: false,
-        supportY: fromSupportY,
-        samples,
-        demanded,
-        cast: demanded,
-        overBudget: false,
-        endColumn
-      };
+      continuous = false;
     }
-    reference = y;
+    if (continuous) reference = y;
     prev = at;
   }
 
   return {
-    continuous: true,
-    supportY: reference,
+    continuous,
+    supportY: continuous ? reference : fromSupportY,
     samples,
     demanded,
     cast: demanded,

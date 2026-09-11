@@ -31,6 +31,17 @@ const ActionBar = ({ selectedEntity }) => {
   const intl = useIntl();
   const [transformMode, setTransformMode] = useState('translate');
   const [newToolMode, setNewToolMode] = useState('off');
+  const [easyGizmoReady, setEasyGizmoReady] = useState(
+    () => easyGizmo && !!globalThis.AFRAME?.INSPECTOR?.easyGizmoControls
+  );
+
+  useEffect(() => {
+    if (!easyGizmo) return;
+    const onReady = () => setEasyGizmoReady(true);
+    Events.on('easygizmoready', onReady);
+    if (globalThis.AFRAME?.INSPECTOR?.easyGizmoControls) onReady();
+    return () => Events.off('easygizmoready', onReady);
+  }, []);
 
   const changeTransformMode = (mode) => {
     Events.emit('showcursor');
@@ -104,7 +115,7 @@ const ActionBar = ({ selectedEntity }) => {
       >
         <AwesomeIcon icon={faHand} />
       </Button>
-      {easyGizmo ? (
+      {easyGizmoReady ? (
         <TransformModeMenu
           transformMode={transformMode}
           changeTransformMode={changeTransformMode}

@@ -12,24 +12,10 @@ import {
   ARC_RADIAL_SEGMENTS,
   ARC_TUBE_RADIUS,
   ARC_TUBULAR_SEGMENTS,
-  ARC_HALF_SWEEP_DEG,
-  COLOR_MOVE,
-  COLOR_ROTATE,
-  OPACITY_ACTION,
-  OPACITY_DIM,
-  OPACITY_HOVER,
-  OPACITY_REST
+  ARC_HALF_SWEEP_DEG
 } from './easyGizmoConstants.js';
 
-/**
- * One list, holding every long-lived resource the gizmo creates — and not only
- * the geometry and materials. The idle probe timer, the scene-update
- * subscription and any in-flight transition are none of those three, so a
- * registry that held geometry alone would leak all of them while reporting
- * itself clean: the event emitter lives for the life of the app, and a
- * transition driver left running against a disposed subsystem is worse than a
- * leak.
- */
+/** Owns disposable resources, including the probe; attachment cleanup lives in controls. */
 export class DisposalRegistry {
   constructor() {
     this.entries = [];
@@ -41,14 +27,6 @@ export class DisposalRegistry {
       this.entries.push(resource);
     }
     return resource;
-  }
-
-  /** Register a teardown that is not itself a disposable — a timer, a
-   * subscription, a running animation. */
-  addTeardown(fn) {
-    const entry = { dispose: fn };
-    this.entries.push(entry);
-    return entry;
   }
 
   has(resource) {
@@ -123,47 +101,6 @@ export function makeMaterial(color, opacity, solid) {
     depthWrite: false,
     side: solid ? THREE.FrontSide : THREE.DoubleSide
   });
-}
-
-export const EMPHASIS_LEVELS = ['rest', 'hover', 'dim', 'action'];
-
-const LEVEL_OPACITY = {
-  rest: OPACITY_REST,
-  hover: OPACITY_HOVER,
-  dim: OPACITY_DIM,
-  action: OPACITY_ACTION
-};
-
-/**
- * The shared material set: four emphasis levels in each of the gizmo's two
- * colours, in a solid and a flat variant, created once and pointed at by
- * whichever meshes are currently at that level.
- *
- * Sharing by role rather than per mesh is what keeps the count bounded as the
- * chevron stack grows. Two kinds of surface still need a material of their own,
- * and both carry a genuinely per-mesh ALPHA rather than a level: the pair of
- * arrowheads that fade out across the flattened transition, and each chevron,
- * which fades independently as the stack recycles past the ends of its run.
- */
-export function makeMaterialSet(registry) {
-  const set = { move: {}, rotate: {} };
-  const colours = { move: COLOR_MOVE, rotate: COLOR_ROTATE };
-  Object.keys(colours).forEach((name) => {
-    EMPHASIS_LEVELS.forEach((level) => {
-      set[name][level] = {
-        solid: registry.add(
-          makeMaterial(colours[name], LEVEL_OPACITY[level], true)
-        ),
-        flat: registry.add(
-          makeMaterial(colours[name], LEVEL_OPACITY[level], false)
-        )
-      };
-    });
-  });
-  // Invisible, and shared by every pick proxy: a drawn one would paint a solid
-  // square over a landing outline or a fat tube over the arc.
-  set.pick = registry.add(makeMaterial(COLOR_MOVE, 0, false));
-  return set;
 }
 
 /**

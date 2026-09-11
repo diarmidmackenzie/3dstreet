@@ -188,13 +188,64 @@ export function computeDodge({ S, gapBelow, gapAbove, latches }) {
  * gap rather than being laid out from one end, so it reaches the whole way over
  * a short hop and a tall one alike.
  */
-export function chevronLayout(spanMetres, targetSpacingMetres) {
+export function chevronLayout(spanMetres, targetSpacingMetres, previousCount) {
   if (!(targetSpacingMetres > 0)) return { count: 1, step: spanMetres };
-  const count = Math.min(
+  const ratio = spanMetres / targetSpacingMetres;
+  let count = Math.min(
     Math.max(Math.round(spanMetres / targetSpacingMetres), 1),
     CHEVRON_MAX
   );
+  // A 15% dead band around each half-step prevents count flicker on zoom.
+  if (
+    previousCount >= 1 &&
+    previousCount <= CHEVRON_MAX &&
+    ratio >= previousCount - 0.65 &&
+    ratio <= previousCount + 0.65
+  ) {
+    count = previousCount;
+  }
   return { count, step: spanMetres / count };
+}
+
+let clipStart;
+let clipEnd;
+let clipMatrix;
+const clipPlanes = [
+  ['x', 0.95],
+  ['y', 0.95],
+  ['z', 1]
+];
+const clipSigns = [-1, 1];
+
+/** Last visible point toward an off-screen destination, or null when no clamp is needed. */
+export function lastVisiblePointOnSegment(from, to, camera, out) {
+  if (!clipStart) {
+    clipStart = new THREE.Vector4();
+    clipEnd = new THREE.Vector4();
+    clipMatrix = new THREE.Matrix4();
+  }
+  camera.updateMatrixWorld();
+  clipMatrix.multiplyMatrices(
+    camera.projectionMatrix,
+    camera.matrixWorldInverse
+  );
+  clipStart.set(from.x, from.y, from.z, 1).applyMatrix4(clipMatrix);
+  clipEnd.set(to.x, to.y, to.z, 1).applyMatrix4(clipMatrix);
+  let enter = 0;
+  let leave = 1;
+  // Clip the connection in homogeneous coordinates, including near/far planes.
+  // This also works when both endpoints are outside but the connection crosses the view.
+  for (const [axis, inset] of clipPlanes) {
+    for (const sign of clipSigns) {
+      const a = inset * clipStart.w + sign * clipStart[axis];
+      const b = inset * clipEnd.w + sign * clipEnd[axis];
+      if (a < 0 && b < 0) return null;
+      if (a < 0) enter = Math.max(enter, a / (a - b));
+      if (b < 0) leave = Math.min(leave, a / (a - b));
+    }
+  }
+  if (enter > leave || leave >= 1) return null;
+  return out.copy(from).lerp(to, leave);
 }
 
 /**

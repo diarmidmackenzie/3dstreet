@@ -188,6 +188,17 @@ describe('the dodge rules', () => {
 });
 
 describe('the chevron stack', () => {
+  it('does not flicker its count when zoom oscillates around a half-step', () => {
+    let count = chevronLayout(2, 1).count;
+    for (const span of [2.49, 2.51, 2.48, 2.52]) {
+      count = chevronLayout(span, 1, count).count;
+      expect(count).toBe(2);
+    }
+    count = chevronLayout(2.7, 1, count).count;
+    expect(count).toBe(3);
+    expect(chevronLayout(2.49, 1, count).count).toBe(3);
+    expect(chevronLayout(2.3, 1, count).count).toBe(2);
+  });
   it('divides the gap rather than laying out from one end', () => {
     const { count, step } = chevronLayout(2, 0.5);
     expect(count).toBe(4);

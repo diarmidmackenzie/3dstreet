@@ -646,12 +646,7 @@ export function Viewport(inspector) {
 
   // Easy mode: one combined move/rotate handle that follows the ground. It is
   // the stock gizmo's alternative for a transform mode, not an additive handle.
-  //
-  // LOADED AS ITS OWN CHUNK, and that is a size decision rather than a
-  // stylistic one: the core bundle is held to a hard 4 MiB budget that the
-  // build treats as an error, the whole subsystem is unreachable without the
-  // flag, and an async chunk is outside the budget by design. The helicopter
-  // flight model is split for exactly this reason.
+  // Load on demand so the experimental controller stays out of the core budget.
   let easyGizmoControls = null;
   // The app's transform mode, tracked here because `'easy'` deliberately never
   // reaches TransformControls.setMode() — see the transformmodechange handler.
@@ -841,21 +836,29 @@ export function Viewport(inspector) {
     Promise.all([
       import('./gizmos/EasyGizmoControls.js'),
       import('./gizmos/easyGizmoMessages.js')
-    ]).then(([{ EasyGizmoControls }, { easyGizmoCommandName }]) => {
-      easyGizmoControls = new EasyGizmoControls(
-        camera,
-        inspector.container,
-        sceneEl
-      );
-      inspector.easyGizmoControls = easyGizmoControls;
-      wireEasyGizmo(easyGizmoCommandName);
-      sceneHelpers.add(easyGizmoControls);
-      // The chunk can land after a selection has already been made, so the
-      // router runs again rather than waiting for the next one.
-      if (transformMode === 'easy' && inspector.selectedEntity) {
-        attachControlsForSelection();
-      }
-    });
+    ])
+      .then(([{ EasyGizmoControls }, { easyGizmoCommandName }]) => {
+        easyGizmoControls = new EasyGizmoControls(
+          inspector.camera,
+          inspector.container,
+          sceneEl
+        );
+        wireEasyGizmo(easyGizmoCommandName);
+        sceneHelpers.add(easyGizmoControls);
+        inspector.easyGizmoControls = easyGizmoControls;
+        Events.emit('easygizmoready');
+        // The chunk can land after a selection has already been made, so the
+        // router runs again rather than waiting for the next one.
+        if (transformMode === 'easy' && inspector.selectedEntity) {
+          attachControlsForSelection();
+        }
+      })
+      .catch((error) => {
+        console.error('Could not load easy move/rotate controls', error);
+        globalThis.STREET?.notify?.errorMessage(
+          'Easy move/rotate could not load. Reload to try again.'
+        );
+      });
   }
 
   Events.on('entityupdate', (detail) => {
@@ -935,6 +938,7 @@ export function Viewport(inspector) {
         transformControls.camera = perspective;
         streetNodeControls.camera = perspective;
         segmentWidthControls.camera = perspective;
+        if (easyGizmoControls) easyGizmoControls.camera = perspective;
         controls.setCamera(perspective);
         updateAspectRatio();
         controls.handlePlanViewRequest();
@@ -1042,6 +1046,7 @@ export function Viewport(inspector) {
   }
 
   Events.on('transformmodechange', (mode) => {
+    if (mode === 'easy' && !easyGizmoControls) return;
     transformMode = mode;
     // `'easy'` MUST NOT REACH setMode. TransformControls stores the mode
     // verbatim and its gizmo then indexes a picker table by it on every matrix
