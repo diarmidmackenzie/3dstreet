@@ -54,6 +54,7 @@ import {
   makeMaterial
 } from './easyGizmoBuild.js';
 import { shouldCaptureKeyEvent } from '../keyCapture.js';
+import { trace, describeEl } from './easyGizmoTrace.js'; // TEMP: diagnostics, not for merge
 import {
   ARC_FLAT_CLEAR_FRAC,
   ARC_FLAT_RADIUS_FRAC,
@@ -313,6 +314,11 @@ class EasyGizmoControls extends GizmoPointerControls {
       this.probe.probeColumn(x, z, referenceY);
     this._onGeometryChanged = () => {
       if (!this.el) return;
+      // TEMP diagnostics (not for merge)
+      trace('geometryChanged', {
+        el: describeEl(this.el),
+        isDragging: this.isDragging
+      });
       // The old press clearance no longer describes the edited geometry.
       if (this.isDragging) this.endGesture('geometrychanged');
       this.deriveLocalBox();
@@ -646,6 +652,7 @@ class EasyGizmoControls extends GizmoPointerControls {
   attach(el) {
     if (!el || !el.object3D) return this;
     if (!this.accepts(el)) return this;
+    trace('attach', { el: describeEl(el) }); // TEMP diagnostics (not for merge)
     this.el = el;
     // Both are required: nothing here resolves hover or accepts a press with
     // either unset.
@@ -686,6 +693,8 @@ class EasyGizmoControls extends GizmoPointerControls {
    */
   detach() {
     if (!this.el) return this;
+    // TEMP diagnostics (not for merge)
+    trace('detach', { el: describeEl(this.el), isDragging: this.isDragging });
     // Restore a live gesture while its entity is still attached.
     if (this.isDragging) this.endGesture('detach');
     this.el.removeEventListener('model-loaded', this._onModelLoaded);
@@ -741,6 +750,11 @@ class EasyGizmoControls extends GizmoPointerControls {
 
   _onModelLoaded(event) {
     if (!this.el || event.target !== this.el) return;
+    // TEMP diagnostics (not for merge)
+    trace('modelLoaded', {
+      el: describeEl(this.el),
+      isDragging: this.isDragging
+    });
     this._onGeometryChanged();
     clearTimeout(this._modelSettleTimer);
     this._modelSettleTimer = setTimeout(this._onGeometryChanged, 20);
@@ -992,6 +1006,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     if (this._releasePending) return;
     this.updateMouse(event);
     this._trackDrag(event);
+    trace('pointerUp', { axis: this.axis }); // TEMP diagnostics (not for merge)
     if (this.axis === 'move') {
       // Finish on the next frame token, so release never spends a second
       // path-probe budget in the frame that already processed a pointermove.
@@ -2215,6 +2230,15 @@ class EasyGizmoControls extends GizmoPointerControls {
    * Cancellation, blur, Escape, selection/geometry change and editor close restore.
    */
   endGesture(reason, event) {
+    // TEMP diagnostics (not for merge)
+    trace('endGesture', {
+      reason,
+      commits: reason === 'pointerup' || reason === 'mouseleave',
+      axis: this.axis,
+      isDragging: this.isDragging,
+      hasSnapshot: !!this.dragSnapshot,
+      el: describeEl(this.el)
+    });
     const snapshot = this.dragSnapshot;
     const dragEl = this.dragEl;
     const dragObject = this.dragObject;

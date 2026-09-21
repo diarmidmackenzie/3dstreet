@@ -3,6 +3,7 @@ import { ShapeVertexControls } from './ShapeVertexControls.js';
 import { StreetNodeControls } from './gizmos/StreetNodeControls.js';
 import { SegmentWidthControls } from './gizmos/SegmentWidthControls.js';
 import { computeRibbonOutline } from '@/tested/street-path-utils.js';
+import { trace, describeEl } from './gizmos/easyGizmoTrace.js'; // TEMP: diagnostics, not for merge
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
@@ -985,6 +986,11 @@ export function Viewport(inspector) {
   });
 
   function detachAllTransformControls() {
+    // TEMP diagnostics (not for merge)
+    trace('router:detachAll', {
+      selected: describeEl(inspector.selectedEntity),
+      easyDragging: !!easyGizmoControls?.isDragging
+    });
     transformControls.detach();
     streetNodeControls.detach();
     segmentWidthControls.detach();
@@ -1035,6 +1041,11 @@ export function Viewport(inspector) {
   // they get ONLY their width bars (#1218), no stock gizmo, because
   // street-align owns segment transforms.
   function attachControlsForSelection() {
+    // TEMP diagnostics (not for merge)
+    trace('router:attachForSelection', {
+      selected: describeEl(inspector.selectedEntity),
+      mode: transformMode
+    });
     detachAllTransformControls();
     const el = inspector.selectedEntity;
     if (
