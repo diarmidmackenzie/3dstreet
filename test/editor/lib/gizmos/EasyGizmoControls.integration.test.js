@@ -1758,6 +1758,28 @@ describe('the dark edge around the yellow parts', () => {
     }
   }
 
+  it('sits half its width outside the square under an orthographic camera, which has no aspect', () => {
+    const f = fixture({ base: BASE });
+    // The fixture canvas is 1200 × 800; the frustum matches it.
+    const ortho = new THREE.OrthographicCamera(-6, 6, 4, -4, 0.1, 1000);
+    const a = THREE.MathUtils.degToRad(45);
+    ortho.position.set(0, BASE + 8 * Math.sin(a), 8 * Math.cos(a));
+    ortho.lookAt(0, BASE, 0);
+    ortho.updateMatrixWorld(true);
+    f.camera = ortho;
+    f.controls.camera = ortho;
+    f.attach();
+    const c = f.controls;
+    expect(c._shallowAmount).toBe(0);
+    expectOutside(
+      sideDistances(
+        f,
+        worldCorners(c.movePlate, QUAD),
+        edgeMidpoints(f, c.plateEdge)
+      )
+    );
+  });
+
   it('sits half its width outside a landing outline far below, measured at its own depth', () => {
     const f = sceneAt(90, { surfaceBelow: 5 });
     const c = f.controls;

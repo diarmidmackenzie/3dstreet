@@ -357,6 +357,21 @@ export const EDGE_PX = 1.5;
  * and a dimmed part's edge dims too. */
 export const EDGE_OPACITY_RATIO = 0.8;
 
+/** Extra room, in CSS pixels, a flattened landing target's two bars need
+ * beyond two edge widths before each is outlined on its own. At exactly two
+ * widths the edges between them would touch and read as one dark band. */
+export const EDGE_MERGE_MARGIN_PX = 1;
+
+/** How face-on a chevron must be seen, as the cosine between its plane's
+ * normal and the view ray, before its edge starts to show. Below this it is
+ * close enough to edge-on that an outline would draw over it rather than
+ * around it. */
+export const EDGE_FACING_HIDE = 0.2;
+
+/** The facing at which a chevron's edge is fully shown; it fades in smoothly
+ * from `EDGE_FACING_HIDE`, so orbiting past the threshold does not pop. */
+export const EDGE_FACING_FULL = 0.5;
+
 /** Caps the edge's offset on a side seen nearly edge-on, where the on-screen
  * distance per metre of offset tends to zero. */
 export const EDGE_MAX_STRETCH = 4;

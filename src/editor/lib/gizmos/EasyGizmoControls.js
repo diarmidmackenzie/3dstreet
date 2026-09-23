@@ -79,7 +79,10 @@ import {
   CHEVRON_SPACING_FRAC,
   COLOR_MOVE,
   COLOR_ROTATE,
+  EDGE_FACING_FULL,
+  EDGE_FACING_HIDE,
   EDGE_MAX_STRETCH,
+  EDGE_MERGE_MARGIN_PX,
   EDGE_OPACITY_RATIO,
   EDGE_PX,
   HEAD_BASE_FLAT_FRAC,
@@ -1303,10 +1306,14 @@ class EasyGizmoControls extends GizmoPointerControls {
   // --- edges ------------------------------------------------------------
 
   _layoutEdges() {
-    const h = this.domElement ? this.domElement.clientHeight : 0;
-    if (!h || !(this.squareSide > 0)) return;
-    this._edgeScreenH = h;
-    this._edgeScreenW = h * (this.camera.aspect || 1);
+    // The same rectangle the pointer is mapped through, so the edge is sized
+    // in the pixels the user sees, for any camera.
+    const rect = this.domElement
+      ? this.domElement.getBoundingClientRect()
+      : null;
+    if (!rect || !rect.width || !rect.height || !(this.squareSide > 0)) return;
+    this._edgeScreenW = rect.width;
+    this._edgeScreenH = rect.height;
     this.camera.updateMatrixWorld();
 
     this._edgeBegin(this.plateEdge);
@@ -1361,7 +1368,7 @@ class EasyGizmoControls extends GizmoPointerControls {
         _edgeAlong.x - _edgeNormal.x,
         _edgeAlong.y - _edgeNormal.y
       );
-      if (gapPx < 2 * EDGE_PX + 1) {
+      if (gapPx < 2 * EDGE_PX + EDGE_MERGE_MARGIN_PX) {
         this._edgeAddRect(edge, outline, 0.5, -halfH, halfH, 1);
       } else {
         this._edgeAddRect(edge, outline, 0.5, halfH - stroke, halfH, 1);
@@ -2211,8 +2218,8 @@ class EasyGizmoControls extends GizmoPointerControls {
         .normalize();
       chev.userData.edgeFacing = THREE.MathUtils.smoothstep(
         Math.abs(_edgeMid.dot(_edgeNormal)),
-        0.2,
-        0.5
+        EDGE_FACING_HIDE,
+        EDGE_FACING_FULL
       );
     }
     // Keep the final direction mark visible when the landing button is outside
