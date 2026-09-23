@@ -42,10 +42,10 @@ const ActionBar = ({ selectedEntity }) => {
   };
 
   // Mode is TOOL state, not per-object state: selecting a data-no-transform
-  // entity must neither repaint nor lock the toolbar (#1898). The mode
-  // buttons stay clickable so the user can still switch translate/rotate
-  // with such an entity selected — the gizmo layer independently refuses to
-  // attach to no-transform entities — and render dimmed (not disabled) to
+  // entity must neither repaint nor lock the toolbar (#1898). The move tools
+  // menu stays usable so the user can still switch move tools with such an
+  // entity selected — the gizmo layer independently refuses to attach to
+  // no-transform entities — and its button renders dimmed (not disabled) to
   // signal the CURRENT SELECTION can't be transformed. A managed street's
   // segments dim the same way (#1806): street-align owns segment transforms,
   // so the gizmo layer gives them width bars only, no move/rotate gizmo.

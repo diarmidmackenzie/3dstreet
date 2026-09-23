@@ -6,7 +6,8 @@ import { isWasdNav } from '../../../../../lib/nav-experimental/flag.js';
 
 // With the WASD kit gated off, the legacy s/d shortcuts remain live
 // (shortcuts.js keeps both keymaps) — advertise the familiar legacy keys.
-// With it on, s/d drive the camera and l/c are the only bindings.
+// With it on, w/a/s/d drive the camera and l/c are the only scale and
+// duplicate bindings.
 const wasdNav = isWasdNav();
 
 const shortcuts = [

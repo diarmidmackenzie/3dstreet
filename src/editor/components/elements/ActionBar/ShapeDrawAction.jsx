@@ -618,8 +618,8 @@ export function useShapeDrawTool(changeTransformMode, isActive) {
       // preview and commit cannot disagree. See docs/shapes.md#sticky-style.
       //
       // It cannot go stale for a SECOND shape either: every commit path is a
-      // deactivation or is immediately followed by one (finish() returns to the
-      // translate tool; the cleanup path IS the deactivation), and this effect
+      // deactivation or is immediately followed by one (finish() returns to
+      // Move; the cleanup path IS the deactivation), and this effect
       // is keyed on isActive — so it re-runs and re-reads before another shape
       // can be drawn. A future "stay active after commit" change breaks that and
       // would have to move the read.

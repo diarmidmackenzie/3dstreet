@@ -67,6 +67,7 @@ import {
   ARC_HALF_SWEEP_DEG,
   ARC_HEAD_LEN,
   ARC_HEAD_OFFSET_DEG,
+  ARC_LIFT_SYMMETRIC,
   ARC_HEAD_RADIUS,
   ARC_ROUND_RADIUS_FRAC,
   ARC_STEP_DEG,
@@ -1907,7 +1908,12 @@ class EasyGizmoControls extends GizmoPointerControls {
     // untouched.
     const side = dodge.flipArc ? 1 : -1;
     _v.set(_centre.x, _centre.y + shift, _centre.z);
-    const lift = flatArcLift(S, this._elevationToDegrees(_v), side);
+    const lift = flatArcLift(
+      S,
+      this._elevationToDegrees(_v),
+      side,
+      ARC_LIFT_SYMMETRIC
+    );
     this.arcGroup.position.set(
       _centre.x,
       _centre.y + shift + side * t * (extents.clearance + lift),
