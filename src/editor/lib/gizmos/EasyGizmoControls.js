@@ -54,7 +54,15 @@ import {
   makeMaterial
 } from './easyGizmoBuild.js';
 import { shouldCaptureKeyEvent } from '../keyCapture.js';
-import { trace, describeEl } from './easyGizmoTrace.js'; // TEMP: diagnostics, not for merge
+// TEMP: diagnostics, not for merge
+import {
+  describeBoxSources,
+  describeEl,
+  trace,
+  traceRecord,
+  traceStage,
+  vectorOf
+} from './easyGizmoTrace.js';
 import {
   ARC_FLAT_CLEAR_FRAC,
   ARC_FLAT_RADIUS_FRAC,
@@ -312,13 +320,17 @@ class EasyGizmoControls extends GizmoPointerControls {
     // an argument, which is what keeps its own module free of raycasting.
     this._probeAt = (x, z, referenceY) =>
       this.probe.probeColumn(x, z, referenceY);
-    this._onGeometryChanged = () => {
+    this._onGeometryChanged = (event) => {
       if (!this.el) return;
-      // TEMP diagnostics (not for merge)
-      trace('geometryChanged', {
+      // TEMP diagnostics (not for merge). No event means the settle timer
+      // that follows a model load.
+      trace('geometrychanged', () => ({
+        type: event?.type ?? 'model-loaded-settle',
+        target: describeEl(event?.target),
+        isSelf: !!event && event.target === this.el,
         el: describeEl(this.el),
         isDragging: this.isDragging
-      });
+      }));
       // The old press clearance no longer describes the edited geometry.
       if (this.isDragging) this.endGesture('geometrychanged');
       this.deriveLocalBox();
@@ -652,7 +664,8 @@ class EasyGizmoControls extends GizmoPointerControls {
   attach(el) {
     if (!el || !el.object3D) return this;
     if (!this.accepts(el)) return this;
-    trace('attach', { el: describeEl(el) }); // TEMP diagnostics (not for merge)
+    // TEMP diagnostics (not for merge): read before the box is derived.
+    const attachRecord = this._traceAttach('attach', el);
     this.el = el;
     // Both are required: nothing here resolves hover or accepts a press with
     // either unset.
@@ -665,6 +678,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     this._dodgeHeld = null;
     this._dodgeRelease = null;
     this.deriveLocalBox();
+    this._traceDerived(attachRecord); // TEMP diagnostics (not for merge)
     this._updateBase();
     this._seedRegime();
     this._refreshSupport();
@@ -694,7 +708,16 @@ class EasyGizmoControls extends GizmoPointerControls {
   detach() {
     if (!this.el) return this;
     // TEMP diagnostics (not for merge)
-    trace('detach', { el: describeEl(this.el), isDragging: this.isDragging });
+    trace('detach', () => ({
+      el: describeEl(this.el),
+      isDragging: this.isDragging,
+      selectionNow: describeEl(globalThis.AFRAME?.INSPECTOR?.selectedEntity),
+      draggedStillConnected: this.dragEl ? this.dragEl.isConnected : null,
+      parentNow: describeEl(this.el.parentElement),
+      parentChanged: this.isDragging
+        ? this.el.parentElement !== this._traceGestureParent
+        : null
+    }));
     // Restore a live gesture while its entity is still attached.
     if (this.isDragging) this.endGesture('detach');
     this.el.removeEventListener('model-loaded', this._onModelLoaded);
@@ -750,18 +773,70 @@ class EasyGizmoControls extends GizmoPointerControls {
 
   _onModelLoaded(event) {
     if (!this.el || event.target !== this.el) return;
-    // TEMP diagnostics (not for merge)
-    trace('modelLoaded', {
-      el: describeEl(this.el),
-      isDragging: this.isDragging
-    });
-    this._onGeometryChanged();
+    // TEMP diagnostics (not for merge): read before the box is re-derived.
+    const attachRecord = this._traceAttach('model-loaded', this.el);
+    this._onGeometryChanged(event);
+    this._traceDerived(attachRecord); // TEMP diagnostics (not for merge)
     clearTimeout(this._modelSettleTimer);
     this._modelSettleTimer = setTimeout(this._onGeometryChanged, 20);
   }
 
   deriveLocalBox() {
     this.localBox = deriveLocalBoxOf(this.object);
+  }
+
+  // --- TEMP diagnostics (not for merge) ---------------------------------
+
+  _traceAttach(tag, el) {
+    const record = traceRecord('attaches', tag, () => {
+      const mixin = el.getAttribute?.('mixin') || null;
+      const entry = mixin
+        ? globalThis.STREET?.catalog?.find?.((item) => item.id === mixin)
+        : null;
+      return {
+        el: describeEl(el),
+        ...describeBoxSources(el.object3D),
+        modelLoaded: !!el.getObject3D?.('mesh'),
+        hasGltfModel: !!el.components?.['gltf-model'],
+        mixin,
+        category: entry ? entry.category : null
+      };
+    });
+    if (record) this._tracePlacementFor = record;
+    return record;
+  }
+
+  _traceDerived(record) {
+    traceStage(record, 'derived', () => ({
+      derivedNull: this.localBox === null,
+      box: this.localBox
+        ? [vectorOf(this.localBox.min), vectorOf(this.localBox.max)]
+        : null
+    }));
+  }
+
+  _tracePlacement() {
+    const record = this._tracePlacementFor;
+    if (!record) return;
+    this._tracePlacementFor = null;
+    traceStage(record, 'placement', () => ({
+      baseY: this.baseY,
+      anchor: vectorOf(this._anchor),
+      moveHandleWorld: vectorOf(
+        this.localToWorld(this.moveGroup.position.clone())
+      ),
+      objectWorld: vectorOf(this.object.getWorldPosition(new THREE.Vector3()))
+    }));
+  }
+
+  _traceEnd(record, reason, axis, outcome) {
+    traceStage(record, 'end', () => ({
+      reason,
+      outcome,
+      axis,
+      pose: this.el ? this._formatPose(this.el) : null,
+      hasFocus: document.hasFocus()
+    }));
   }
 
   // --- the pointer layer ------------------------------------------------
@@ -797,6 +872,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     window.addEventListener('keydown', this._onKeyDown, true);
     window.addEventListener('keyup', this._onKeyUp, true);
     window.addEventListener('blur', this._onBlur);
+    window.addEventListener('focus', this._onTraceFocus); // TEMP diagnostics
     const canvas = this._canvas();
     if (canvas) canvas.addEventListener('mouseleave', this._onCanvasLeave);
   }
@@ -816,6 +892,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     window.removeEventListener('keydown', this._onKeyDown, true);
     window.removeEventListener('keyup', this._onKeyUp, true);
     window.removeEventListener('blur', this._onBlur);
+    window.removeEventListener('focus', this._onTraceFocus); // TEMP diagnostics
     const canvas = this._canvas();
     if (canvas) canvas.removeEventListener('mouseleave', this._onCanvasLeave);
     // Suppression is scoped to the attachment, like the press listeners.
@@ -915,6 +992,19 @@ class EasyGizmoControls extends GizmoPointerControls {
     if (this.startDrag(axis, event) === false) return;
     // Ownership is independent of whether native capture is available.
     this._pointerId = event.pointerId ?? null;
+    // TEMP diagnostics (not for merge)
+    this._traceGestureParent = this.el.parentElement;
+    this._traceGesture = traceRecord('gestures', 'gesture', () => ({
+      el: describeEl(this.el),
+      press: {
+        axis,
+        pointerId: this._pointerId,
+        pointerType: event.pointerType || 'mouse',
+        pose: this.dragSnapshot,
+        parent: describeEl(this.el.parentElement),
+        hasFocus: document.hasFocus()
+      }
+    }));
     if (canvas && canvas.setPointerCapture && event.pointerId !== undefined) {
       try {
         canvas.setPointerCapture(event.pointerId);
@@ -1001,12 +1091,26 @@ class EasyGizmoControls extends GizmoPointerControls {
   }
 
   _onPointerUp(event) {
+    // TEMP diagnostics (not for merge): a release from a pointer this drag does
+    // not own is dropped silently below.
+    if (this.isDragging && !this._ownsPointer(event)) {
+      trace('pointerup', () => ({
+        pointerId: event.pointerId ?? null,
+        owned: false
+      }));
+    }
     if (!this.isDragging || !this._ownsPointer(event)) return;
     this._suppress(event);
     if (this._releasePending) return;
     this.updateMouse(event);
     this._trackDrag(event);
-    trace('pointerUp', { axis: this.axis }); // TEMP diagnostics (not for merge)
+    // TEMP diagnostics (not for merge)
+    trace('pointerup', () => ({
+      pointerId: event.pointerId ?? null,
+      owned: true,
+      axis: this.axis,
+      deferred: this.axis === 'move'
+    }));
     if (this.axis === 'move') {
       // Finish on the next frame token, so release never spends a second
       // path-probe budget in the frame that already processed a pointermove.
@@ -1026,19 +1130,39 @@ class EasyGizmoControls extends GizmoPointerControls {
   }
 
   _onLostCapture = (event) => {
+    // TEMP diagnostics (not for merge)
+    if (this.isDragging) {
+      trace('lostcapture', () => ({
+        pointerId: event.pointerId ?? null,
+        owned: this._ownsPointer(event),
+        releasePending: this._releasePending
+          ? this._releasePending.reason
+          : null
+      }));
+    }
     // Browsers release capture after pointerup, before the queued frame runs.
     if (this.isDragging && this._ownsPointer(event) && !this._releasePending) {
       this.endGesture('pointercancel');
     }
   };
 
+  _onTraceFocus = () => {
+    trace('focus', () => ({ isDragging: this.isDragging })); // TEMP diagnostics
+  };
+
   _onBlur() {
+    trace('blur', () => ({ isDragging: this.isDragging })); // TEMP diagnostics
     if (!this.isDragging) return;
     this.endGesture('blur');
   }
 
   _onCanvasLeave() {
     if (!this.isDragging) return;
+    // TEMP diagnostics (not for merge)
+    trace('mouseleave', () => ({
+      releasePending: this._releasePending ? this._releasePending.reason : null,
+      deferred: this.axis === 'move'
+    }));
     if (this._releasePending) return;
     if (this.axis === 'move') {
       this._releasePending = { reason: 'mouseleave' };
@@ -1220,6 +1344,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     this._advance();
     if (this._releasePending) {
       const { reason, event } = this._releasePending;
+      trace('releaseconsumed', () => ({ reason })); // TEMP diagnostics
       this.endGesture(reason, event);
     }
   }
@@ -1305,6 +1430,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     const now = performance.now();
     this._advanceRegime(now);
     this._layout(_p, yaw, now);
+    this._tracePlacement(); // TEMP diagnostics (not for merge)
   }
 
   /** The object's base RIGHT NOW. Pointer events can outpace the render loop,
@@ -2231,14 +2357,15 @@ class EasyGizmoControls extends GizmoPointerControls {
    */
   endGesture(reason, event) {
     // TEMP diagnostics (not for merge)
-    trace('endGesture', {
+    const traced = this._traceGesture;
+    this._traceGesture = null;
+    const traceAxis = this.axis;
+    trace('endgesture', () => ({
       reason,
-      commits: reason === 'pointerup' || reason === 'mouseleave',
       axis: this.axis,
       isDragging: this.isDragging,
-      hasSnapshot: !!this.dragSnapshot,
-      el: describeEl(this.el)
-    });
+      hasSnapshot: !!this.dragSnapshot
+    }));
     const snapshot = this.dragSnapshot;
     const dragEl = this.dragEl;
     const dragObject = this.dragObject;
@@ -2275,14 +2402,21 @@ class EasyGizmoControls extends GizmoPointerControls {
     }
     this.highlight(this.axis);
 
-    if (!this.el || !snapshot) return;
-    if (this.el !== dragEl || this.object !== dragObject) return;
+    if (!this.el || !snapshot) {
+      this._traceEnd(traced, reason, traceAxis, 'no-gesture'); // TEMP
+      return;
+    }
+    if (this.el !== dragEl || this.object !== dragObject) {
+      this._traceEnd(traced, reason, traceAxis, 'dropped-el-mismatch'); // TEMP
+      return;
+    }
 
     const commits = reason === 'pointerup' || reason === 'mouseleave';
     if (!commits) {
       this._restore(snapshot);
       this.dispatchEvent(this.changeEvent);
       this.dispatchEvent(this.objectChangeEvent);
+      this._traceEnd(traced, reason, traceAxis, 'restored'); // TEMP
       return;
     }
 
@@ -2290,8 +2424,14 @@ class EasyGizmoControls extends GizmoPointerControls {
       // A landing square is a button: it commits only if the release happens
       // with the pointer still over the target that was pressed, and a release
       // anywhere else cancels with no movement and no undo entry.
-      if (!landing || !landing.armed || reason !== 'pointerup') return;
-      if (landing.entity && landing.entity.isConnected === false) return;
+      if (!landing || !landing.armed || reason !== 'pointerup') {
+        this._traceEnd(traced, reason, traceAxis, 'landing-cancelled'); // TEMP
+        return;
+      }
+      if (landing.entity && landing.entity.isConnected === false) {
+        this._traceEnd(traced, reason, traceAxis, 'landing-cancelled'); // TEMP
+        return;
+      }
       const baseY = this.currentBaseY();
       if (landing.entity) {
         const column = this.probe.probeColumn(_p.x, _p.z, baseY);
@@ -2301,6 +2441,7 @@ class EasyGizmoControls extends GizmoPointerControls {
           target.entity !== landing.entity ||
           Math.abs(target.y - landing.y) > 0.001
         ) {
+          this._traceEnd(traced, reason, traceAxis, 'landing-cancelled'); // TEMP
           return;
         }
       }
@@ -2317,6 +2458,15 @@ class EasyGizmoControls extends GizmoPointerControls {
     }
 
     const pose = this._formatPose(this.el);
+    // TEMP diagnostics (not for merge)
+    this._traceEnd(
+      traced,
+      reason,
+      traceAxis,
+      pose.position === snapshot.position && pose.rotation === snapshot.rotation
+        ? 'unchanged'
+        : 'committed'
+    );
     this.dispatchEvent({
       type: 'commitDrag',
       entity: this.el,

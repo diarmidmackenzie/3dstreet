@@ -987,10 +987,10 @@ export function Viewport(inspector) {
 
   function detachAllTransformControls() {
     // TEMP diagnostics (not for merge)
-    trace('router:detachAll', {
+    trace('router:detachAll', () => ({
       selected: describeEl(inspector.selectedEntity),
       easyDragging: !!easyGizmoControls?.isDragging
-    });
+    }));
     transformControls.detach();
     streetNodeControls.detach();
     segmentWidthControls.detach();
@@ -1042,10 +1042,10 @@ export function Viewport(inspector) {
   // street-align owns segment transforms.
   function attachControlsForSelection() {
     // TEMP diagnostics (not for merge)
-    trace('router:attachForSelection', {
+    trace('router:attachForSelection', () => ({
       selected: describeEl(inspector.selectedEntity),
       mode: transformMode
-    });
+    }));
     detachAllTransformControls();
     const el = inspector.selectedEntity;
     if (
