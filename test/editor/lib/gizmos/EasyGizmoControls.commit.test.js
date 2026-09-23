@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EasyGizmoControls } from '@/editor/lib/gizmos/EasyGizmoControls.js';
 import {
+  LANDING_BAR_HEIGHT_FRAC,
   LANDING_HIDE_GAP_METRES,
   LANDING_SHOW_GAP_METRES
 } from '@/editor/lib/gizmos/easyGizmoConstants.js';
@@ -204,6 +205,53 @@ describe('the landing gate', () => {
   it('offers nothing where there is no surface', () => {
     const c = makeControls();
     expect(c._gateLanding(null, 0, true)).toBeNull();
+  });
+});
+
+describe('a landing outline as it flattens', () => {
+  /** Lays a target out at flatten amount `f`, held there for the frame. */
+  function outlineAt(f) {
+    const c = makeControls();
+    const group = c.landingDownGroup;
+    const ud = group.userData;
+    ud.wasVisible = true;
+    ud.regimeLatch = f >= 0.5;
+    ud.faceAmount = f;
+    Object.assign(ud.anim, {
+      from: f,
+      to: f,
+      current: f,
+      startMs: 0,
+      endMs: 0
+    });
+    c._layoutLandingTarget(group, -1, new THREE.Vector3(0, 0, -5), 0, 0, 1, 0);
+    expect(ud.faceAmount).toBe(f);
+    return ud;
+  }
+
+  it('loses its side edges once flat, leaving two full-width bars', () => {
+    const { bars, pick } = outlineAt(1);
+    for (const bar of [bars[2], bars[3]]) {
+      expect(bar.visible).toBe(false);
+      expect(bar.scale.x).toBeLessThanOrEqual(1e-3);
+    }
+    for (const bar of [bars[0], bars[1]]) {
+      expect(bar.visible).toBe(true);
+      expect(bar.scale.x).toBe(1);
+    }
+    expect(pick.scale.x).toBe(1);
+    expect(pick.scale.y).toBeCloseTo(LANDING_BAR_HEIGHT_FRAC, 12);
+    expect(pick.scale.z).toBe(1);
+  });
+
+  it('keeps the side edges on the outline while it is not flat', () => {
+    for (const f of [0, 0.5]) {
+      const { bars } = outlineAt(f);
+      expect(bars[2].visible).toBe(true);
+      expect(bars[2].position.x + bars[2].scale.x / 2).toBeCloseTo(0.5, 12);
+      expect(bars[3].position.x - bars[3].scale.x / 2).toBeCloseTo(-0.5, 12);
+    }
+    expect(outlineAt(0).pick.scale.toArray()).toEqual([1, 1, 1]);
   });
 });
 

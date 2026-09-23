@@ -1783,10 +1783,15 @@ class EasyGizmoControls extends GizmoPointerControls {
     bars[1].position.set(0, 0, -(h - stroke) / 2);
     bars[1].scale.set(1, stroke, 1);
     const side = Math.max(h - 2 * stroke, 1e-4);
-    bars[2].position.set((1 - stroke) / 2, 0, 0);
-    bars[2].scale.set(stroke, side, 1);
-    bars[3].position.set(-(1 - stroke) / 2, 0, 0);
-    bars[3].scale.set(stroke, side, 1);
+    // The side bars thin away as the outline flattens, from the inside so its
+    // outer edge stays put: at the end it is two long bars, the same shape as
+    // the flattened move strip, rather than a box.
+    const sideStroke = Math.max(stroke * (1 - f), 1e-4);
+    bars[2].position.set((1 - sideStroke) / 2, 0, 0);
+    bars[2].scale.set(sideStroke, side, 1);
+    bars[3].position.set(-(1 - sideStroke) / 2, 0, 0);
+    bars[3].scale.set(sideStroke, side, 1);
+    bars[2].visible = bars[3].visible = f < 0.99;
     // The clickable area is the rectangle, not the square it came from.
     ud.pick.scale.set(1, h, 1);
 
