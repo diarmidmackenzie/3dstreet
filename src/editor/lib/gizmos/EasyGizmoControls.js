@@ -36,9 +36,11 @@ import {
 } from './easyGizmoGround.js';
 import {
   computeDodge,
+  dodgeExtents,
   decideEasyPress,
   deriveLocalBoxOf,
   easeInOutCubic,
+  flatArcLift,
   elevationAngleDegrees,
   latchByHysteresis,
   lerp,
@@ -55,7 +57,6 @@ import {
 } from './easyGizmoBuild.js';
 import { shouldCaptureKeyEvent } from '../keyCapture.js';
 import {
-  ARC_FLAT_CLEAR_FRAC,
   ARC_FLAT_RADIUS_FRAC,
   ARC_FLAT_SWEEP_DEG,
   ARC_FULL_SWEEP_DEG,
@@ -63,7 +64,6 @@ import {
   ARC_HEAD_LEN,
   ARC_HEAD_OFFSET_DEG,
   ARC_HEAD_RADIUS,
-  ARC_MIN_TUBE_PX,
   ARC_ROUND_RADIUS_FRAC,
   ARC_STEP_DEG,
   ARC_TUBE_RADIUS,
@@ -1505,7 +1505,8 @@ class EasyGizmoControls extends GizmoPointerControls {
     _centre.set(worldPos.x, baseY, worldPos.z);
     this._refreshShallowFrame(yaw);
     const shallowYaw = this._shallowYaw;
-    const dodge = this._resolveDodge(S, baseY, now);
+    const extents = dodgeExtents(S, mpp, t);
+    const dodge = this._resolveDodge(extents.stripClear, baseY, now);
     const shift = dodge.shift * t;
 
     // --- move handle ---------------------------------------------------
@@ -1569,19 +1570,22 @@ class EasyGizmoControls extends GizmoPointerControls {
 
     // --- rotate arc -----------------------------------------------------
     const radius = S * lerp(ARC_ROUND_RADIUS_FRAC, ARC_FLAT_RADIUS_FRAC, t);
-    const tubeWorld = Math.max(S * 0.06, ARC_MIN_TUBE_PX * mpp);
-    // The arc's half-thickness is its HEAD's, under the group's vertical scale
-    // — the cone's circular section is drawn as an ellipse, so the head radius
-    // alone would understate it.
-    const arcHalfThickness = (ARC_HEAD_RADIUS * tubeWorld) / ARC_TUBE_RADIUS;
-    const clearance =
-      stripNarrow / 2 + arcHalfThickness + S * ARC_FLAT_CLEAR_FRAC;
+    const tubeWorld = extents.tubeWorld;
     // The flat ring sits in the strip's own plane and would cross it on screen
-    // at every near-horizontal view, so it clears by the two half-thicknesses
-    // plus a small gap — derived, so it tracks both as either changes.
+    // at every near-horizontal view, so it is held clear of the strip and its
+    // arrowheads by their half-heights, its own and a small gap. Its drawn
+    // front is nearer the camera than the strip, so parallax moves it on screen
+    // by up to its radius times the tangent of the elevation; the lift makes up
+    // the rest of that. The elevation is taken to the handle as drawn, shift
+    // included, because the shift changes how far the camera looks down on it.
+    // Both are scaled by the flatten amount, so the round presentation is
+    // untouched.
+    const side = dodge.flipArc ? 1 : -1;
+    _v.set(_centre.x, _centre.y + shift, _centre.z);
+    const lift = flatArcLift(S, this._elevationToDegrees(_v), side);
     this.arcGroup.position.set(
       _centre.x,
-      _centre.y + shift + (dodge.flipArc ? 1 : -1) * t * clearance,
+      _centre.y + shift + side * t * (extents.clearance + lift),
       _centre.z
     );
 
@@ -1659,9 +1663,9 @@ class EasyGizmoControls extends GizmoPointerControls {
    * shift can be a kerb-height stale and the user is looking straight at the
    * control they just let go of.
    */
-  _resolveDodge(S, baseY, now) {
+  _resolveDodge(stripClear, baseY, now) {
     const live = computeDodge({
-      S,
+      stripClear,
       gapBelow: this.landingDownY === null ? null : baseY - this.landingDownY,
       gapAbove: this.landingUpY === null ? null : this.landingUpY - baseY,
       latches: this._dodgeLatches

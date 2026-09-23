@@ -125,24 +125,11 @@ export const ARC_MIN_TUBE_PX = 3;
 // because S runs about 1.5 m at an 8 m camera to 6.3 m at 150 m. Written in
 // metres these would fire at the right moment at exactly one zoom.
 
-/** Half the flattened strip's height, as a fraction of S. Also the closest the
- * handle may be shifted to a landing bar. */
-export const STRIP_HALF_FRAC = 0.11;
-
-/** How far from the base the arc starts, as a fraction of S — and therefore the
- * scale at which a bar crowds the strip. */
-export const ARC_NEAR_FRAC = 0.15;
-
-/** How far from the base the arc reaches, as a fraction of S. A bar beyond it
- * cannot be under the arc whichever side the arc takes, which is what makes it
- * the right threshold for the flip rule. */
-export const ARC_REACH_FRAC = 0.47;
-
 /**
- * Hysteresis band on each dodge threshold, as a fraction of the threshold: a
- * rule engages at its own figure and disengages at that figure plus this much.
- * Without a pair the handle jumps back and forth as an object crosses a kerb.
- * Relative rather than absolute because every threshold here scales with S.
+ * Hysteresis on the choice of the arc's side, as a fraction of the room on the
+ * side it is on: the arc moves only once the other side has this much more.
+ * Without it the arc jumps back and forth as an object crosses a kerb between
+ * two surfaces. Relative rather than absolute because the room scales with S.
  */
 export const DODGE_HYSTERESIS_FRAC = 0.15;
 
@@ -301,6 +288,40 @@ export const HEAD_LEN_FLAT_FRAC = 0.28;
 /** The flattened strip's extents, as fractions of S. */
 export const STRIP_LEN_FRAC = 2.2;
 export const STRIP_NARROW_FRAC = 0.22;
+
+// --- edges and derived dodge extents -------------------------------------
+
+/**
+ * The part of the flattened arc's parallax that its world clearance already
+ * absorbs, as a fraction of S. The lift is the rest. Chosen: no larger than the
+ * smallest value that keeps the arc clear of the move handle anywhere measured.
+ */
+export const ARC_LIFT_SLACK_FRAC = 0.05;
+
+/**
+ * Upper bound, in degrees, on the elevation the flattened arc's lift is
+ * computed from. The flattened presentation is held for a drag while the camera
+ * or the object can keep moving, so the elevation can grow far past the
+ * flattened range; the lift grows with its tangent, and without a bound it can
+ * carry the arc out of view. The bound only keeps the lift finite. A drag held
+ * flat past about 25° can still put the arc across the move handle.
+ */
+export const ARC_LIFT_MAX_DEG = 30;
+
+/**
+ * Whether the flattened arc is lifted away from the move handle whichever side
+ * of it the camera is on (true), or only when the camera and the arc are on
+ * the same side of the strip (false).
+ *
+ * At rest only the same-side case needs it: the flat ring's near edge is drawn
+ * toward the handle from that side and away from it from the other. During a
+ * rotate drag, though, the ring turns with the object and its far points can
+ * come back across the handle from either side, so lifting on both sides keeps
+ * more clearance while rotating. The cost is that in the commonest low view,
+ * camera above with the arc below the strip, the arc sits noticeably further
+ * below the strip than it needs to at rest.
+ */
+export const ARC_LIFT_SYMMETRIC = true;
 
 // --- commit --------------------------------------------------------------
 

@@ -5,6 +5,12 @@ import catalog from '@/catalog.json';
 import { evaluatePath } from '@/editor/lib/gizmos/easyGizmoGround.js';
 import { _internals as cursorInternals } from '@/editor/lib/nav-experimental/cursorAnchor.js';
 import {
+  dodgeExtents,
+  elevationAngleDegrees,
+  flatArcLift
+} from '@/editor/lib/gizmos/easyGizmoMath.js';
+import {
+  ARC_FLAT_CLEAR_FRAC,
   IDLE_PROBE_INTERVAL_MS,
   HORIZON_CAP_METRES,
   OPACITY_ACTION,
@@ -1156,5 +1162,285 @@ describe('release, touch and attachment lifecycle', () => {
     for (const mesh of meshes) {
       expect(cursorInternals._isExcludedObject(mesh)).toBe(true);
     }
+  });
+});
+
+// --- what is drawn, on screen ---------------------------------------------
+
+// The fixture canvas.
+const SCREEN_W = 1200;
+const SCREEN_H = 800;
+
+/** Every drawn triangle under the given roots, in screen pixels: visible
+ * meshes only, pick proxies and invisible pick quads left out, and each
+ * geometry's draw range honoured, since the flattened arc is drawn short. */
+function screenTriangles(roots, camera) {
+  const tris = [];
+  const v = new THREE.Vector3();
+  camera.updateMatrixWorld(true);
+  for (const root of roots) {
+    root.updateMatrixWorld(true);
+    root.traverseVisible((node) => {
+      if (!node.isMesh || node.userData.isPickProxy) return;
+      if (node.material && node.material.opacity === 0) return;
+      const geometry = node.geometry;
+      const position = geometry.attributes.position;
+      const index = geometry.index;
+      const count = index ? index.count : position.count;
+      const start = geometry.drawRange.start;
+      const end = Math.min(count, start + geometry.drawRange.count);
+      const at = (k) => {
+        const i = index ? index.getX(k) : k;
+        v.fromBufferAttribute(position, i)
+          .applyMatrix4(node.matrixWorld)
+          .project(camera);
+        return {
+          x: ((v.x + 1) / 2) * SCREEN_W,
+          y: ((1 - v.y) / 2) * SCREEN_H
+        };
+      };
+      for (let k = start; k + 3 <= end; k += 3) {
+        tris.push([at(k), at(k + 1), at(k + 2)]);
+      }
+    });
+  }
+  return tris;
+}
+
+/** Where a vertical screen line crosses a set of triangles: its topmost and
+ * bottommost crossing in pixels (y down), or null if it misses them all. */
+function columnExtent(tris, x) {
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const tri of tris) {
+    for (let e = 0; e < 3; e++) {
+      const p = tri[e];
+      const q = tri[(e + 1) % 3];
+      if ((p.x - x) * (q.x - x) > 0 || p.x === q.x) continue;
+      const y = p.y + ((q.y - p.y) * (x - p.x)) / (q.x - p.x);
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y);
+    }
+  }
+  return top <= bottom ? { top, bottom } : null;
+}
+
+/**
+ * The smallest on-screen gap, per quarter-pixel column, between the arc and
+ * another drawn part, where the arc is meant to be above it (`arcAbove`) or
+ * below it. Negative means they overlap. `columns` counts the columns where
+ * both are drawn, so a caller can refuse a measurement of nothing.
+ */
+function arcSeparation(arcTris, otherTris, arcAbove) {
+  const xs = (tris) => tris.flat().map((p) => p.x);
+  const from = Math.max(Math.min(...xs(arcTris)), Math.min(...xs(otherTris)));
+  const to = Math.min(Math.max(...xs(arcTris)), Math.max(...xs(otherTris)));
+  let min = Infinity;
+  let columns = 0;
+  for (let x = Math.ceil(from * 4) / 4; x <= to; x += 0.25) {
+    const arc = columnExtent(arcTris, x);
+    const other = columnExtent(otherTris, x);
+    if (!arc || !other) continue;
+    columns++;
+    const gap = arcAbove ? other.top - arc.bottom : arc.top - other.bottom;
+    min = Math.min(min, gap);
+  }
+  return { min, columns };
+}
+
+describe('the flattened arc on screen', () => {
+  const BASE = 5;
+
+  /** Camera `distance` from the object's base at `elevationDeg` (positive
+   * above), aimed at it. */
+  function viewFrom(f, distance, elevationDeg, baseY = BASE) {
+    const a = THREE.MathUtils.degToRad(elevationDeg);
+    f.camera.position.set(
+      0,
+      baseY + distance * Math.sin(a),
+      distance * Math.cos(a)
+    );
+    f.camera.lookAt(0, baseY, 0);
+    f.camera.updateMatrixWorld(true);
+  }
+
+  /**
+   * An object at `BASE`, seen flattened from `distance` and `elevationDeg`.
+   * The regime is seeded at a lower angle and the camera then moved, because
+   * the flattened presentation is entered below 10° and held to 12°.
+   * `targets(S)` lists landing surfaces as `[offset from base, kind]`; they are
+   * placed once the square's size is known, which fixes them in units of S.
+   */
+  function flatScene(distance, elevationDeg, targets = () => []) {
+    const f = fixture({ base: BASE });
+    const seedDeg =
+      Math.sign(elevationDeg) * Math.min(Math.abs(elevationDeg), 8);
+    viewFrom(f, distance, seedDeg);
+    f.attach();
+    const S = f.controls.squareSide;
+    for (const [offset, kind] of targets(S)) {
+      f.surface(BASE + offset, { kind });
+    }
+    f.controls._refreshSupport();
+    viewFrom(f, distance, elevationDeg);
+    f.frame();
+    expect(f.controls._shallowAmount).toBe(1);
+    return f;
+  }
+
+  const handleTris = (f) => screenTriangles([f.controls.moveGroup], f.camera);
+  const arcTris = (f) => screenTriangles([f.controls.arcGroup], f.camera);
+  const outlineTris = (f, group) =>
+    screenTriangles(group.userData.bars, f.camera);
+  const gapPx = (f) =>
+    (ARC_FLAT_CLEAR_FRAC * f.controls.squareSide) / f.controls._mpp;
+
+  it('adds no lift in the round presentation', () => {
+    const f = fixture({ base: BASE });
+    viewFrom(f, 8, 45);
+    f.attach();
+    f.surface(BASE - 0.4 * f.controls.squareSide);
+    f.controls._refreshSupport();
+    f.frame();
+    expect(f.controls._shallowAmount).toBe(0);
+    expect(f.controls.landingDownGroup.visible).toBe(true);
+    expect(f.controls._dodge.flipArc).toBe(true);
+    // At 45° the clamped lift would be about 0.82 S.
+    expect(f.controls.arcGroup.position.y).toBeCloseTo(f.controls.baseY, 9);
+  });
+
+  it('reads the elevation at the handle as drawn, shifted to dodge a target', () => {
+    // A target just below shifts the handle up, which lowers the angle the
+    // camera looks down on it; the arc goes above the strip, on the camera's
+    // side, so both forms of the lift apply.
+    const f = flatScene(8, 4, () => [[-0.15, 'segment']]);
+    const c = f.controls;
+    expect(c.landingDownGroup.visible).toBe(true);
+    expect(c._dodge.flipArc).toBe(true);
+    expect(c._dodge.shift).toBeGreaterThan(0);
+    const S = c.squareSide;
+    const t = c._shallowAmount;
+    const shift = c._dodge.shift * t;
+    const { clearance } = dodgeExtents(S, c._mpp, t);
+    const applied = c.arcGroup.position.y - (c.baseY + shift) - t * clearance;
+    const camera = f.camera.getWorldPosition(new THREE.Vector3());
+    const atHandle = elevationAngleDegrees(camera, {
+      x: 0,
+      y: c.baseY + shift,
+      z: 0
+    });
+    const atAnchor = elevationAngleDegrees(camera, { x: 0, y: c.baseY, z: 0 });
+    expect(applied).toBeCloseTo(t * flatArcLift(S, atHandle, 1), 9);
+    expect(
+      Math.abs(flatArcLift(S, atAnchor, 1) - flatArcLift(S, atHandle, 1))
+    ).toBeGreaterThan(0.01 * S);
+  });
+
+  for (const distance of [8, 60]) {
+    for (const elevationDeg of [2, 6, 10, 11.99]) {
+      it(`keeps the arc clear of the handle above the strip, ${distance} m, ${elevationDeg}°, target below`, () => {
+        const f = flatScene(distance, elevationDeg, (S) => [
+          [-0.4 * S, 'segment']
+        ]);
+        expect(f.controls.landingDownGroup.visible).toBe(true);
+        expect(f.controls._dodge.flipArc).toBe(true);
+        const sep = arcSeparation(arcTris(f), handleTris(f), true);
+        expect(sep.columns).toBeGreaterThan(0);
+        expect(sep.min).toBeGreaterThanOrEqual(gapPx(f) - 0.1);
+      });
+    }
+    // The camera-below poses are the ones where parallax draws the arc toward
+    // the handle; from above with the arc below, it is drawn away from it.
+    for (const elevationDeg of [-11.99, -6, -2, 11.99]) {
+      it(`keeps the arc clear of the handle below the strip, ${distance} m, ${elevationDeg}°, no targets`, () => {
+        const f = flatScene(distance, elevationDeg);
+        expect(f.controls.landingDownGroup.visible).toBe(false);
+        expect(f.controls.landingUpGroup.visible).toBe(false);
+        expect(f.controls._dodge.flipArc).toBe(false);
+        const sep = arcSeparation(arcTris(f), handleTris(f), false);
+        expect(sep.columns).toBeGreaterThan(0);
+        expect(sep.min).toBeGreaterThanOrEqual(gapPx(f) - 0.1);
+      });
+    }
+  }
+
+  it('keeps the arc clear of a handle shifted up between two close targets', () => {
+    // 5 m, 2° from below. A target shown at 0.15 m stays shown when the object
+    // is lowered to 0.06 m, inside the landing gate's hysteresis, so the handle
+    // is shifted well up; a second target above keeps the arc below the strip,
+    // on the camera's side.
+    const f = fixture({ base: BASE });
+    viewFrom(f, 5, -2);
+    f.surface(BASE - 0.15);
+    f.attach();
+    const c = f.controls;
+    expect(c.landingDownGroup.visible).toBe(true);
+    const lowered = BASE - 0.09;
+    f.object.position.y = lowered;
+    f.object.updateMatrixWorld(true);
+    c._refreshSupport();
+    const { stripClear } = dodgeExtents(c.squareSide, c._mpp, 1);
+    const shift = stripClear - 0.06;
+    f.surface(lowered + shift + 0.5 * stripClear, { kind: 'import' });
+    c._refreshSupport();
+    viewFrom(f, 5, -2, lowered);
+    f.frame();
+    expect(c._shallowAmount).toBe(1);
+    expect(c.landingDownGroup.visible).toBe(true);
+    expect(c.landingUpGroup.visible).toBe(true);
+    expect(c._dodge.flipArc).toBe(false);
+    expect(c._dodge.shift).toBeGreaterThan(0);
+    const sep = arcSeparation(arcTris(f), handleTris(f), false);
+    expect(sep.columns).toBeGreaterThan(0);
+    expect(sep.min).toBeGreaterThanOrEqual(gapPx(f) - 0.1);
+  });
+
+  for (const distance of [8, 60]) {
+    for (const [label, offset] of [
+      ['near', () => -0.15],
+      ['far', (S) => -2 * S]
+    ]) {
+      it(`goes above the strip, clear of a lone ${label} target below, ${distance} m`, () => {
+        const f = flatScene(distance, 10, (S) => [[offset(S), 'segment']]);
+        expect(f.controls.landingDownGroup.visible).toBe(true);
+        expect(f.controls._dodge.flipArc).toBe(true);
+        const sep = arcSeparation(
+          arcTris(f),
+          outlineTris(f, f.controls.landingDownGroup),
+          true
+        );
+        expect(sep.columns).toBeGreaterThan(0);
+        expect(sep.min).toBeGreaterThanOrEqual(gapPx(f));
+      });
+    }
+
+    it(`goes toward the farther of two targets, clear of it, ${distance} m`, () => {
+      const f = flatScene(distance, 10, (S) => [
+        [-0.15, 'segment'],
+        [2 * S, 'import']
+      ]);
+      expect(f.controls.landingDownGroup.visible).toBe(true);
+      expect(f.controls.landingUpGroup.visible).toBe(true);
+      expect(f.controls._dodge.flipArc).toBe(true);
+      const sep = arcSeparation(
+        arcTris(f),
+        outlineTris(f, f.controls.landingUpGroup),
+        false
+      );
+      expect(sep.columns).toBeGreaterThan(0);
+      expect(sep.min).toBeGreaterThanOrEqual(gapPx(f) - 0.1);
+    });
+  }
+
+  it('returns the arc below the strip once the object has landed', () => {
+    const f = flatScene(8, 10, () => [[-0.15, 'segment']]);
+    expect(f.controls.landingDownGroup.visible).toBe(true);
+    expect(f.controls._dodge.flipArc).toBe(true);
+    f.object.position.y = BASE - 0.12; // 0.03 m above the surface
+    f.object.updateMatrixWorld(true);
+    f.controls._refreshSupport();
+    f.frame();
+    expect(f.controls.landingDownGroup.visible).toBe(false);
+    expect(f.controls._dodge.flipArc).toBe(false);
   });
 });
