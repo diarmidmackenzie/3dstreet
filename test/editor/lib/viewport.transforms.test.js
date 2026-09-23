@@ -114,58 +114,96 @@ describe('selection bounds transform preservation', () => {
   });
 });
 
+function mountViewport() {
+  const canvas = document.createElement('canvas');
+  document.body.append(canvas);
+  const sceneEl = document.createElement('a-scene');
+  document.body.append(sceneEl);
+  sceneEl.object3D = new THREE.Scene();
+  sceneEl.canvas = canvas;
+  sceneEl.systems = {};
+  const inspector = {
+    sceneEl,
+    container: canvas,
+    sceneHelpers: new THREE.Scene(),
+    camera: new THREE.PerspectiveCamera(),
+    helpers: {},
+    opened: true,
+    execute: vi.fn()
+  };
+  vi.stubGlobal('AFRAME', { INSPECTOR: inspector });
+  Viewport(inspector);
+  function dispose() {
+    inspector.easyGizmoControls.dispose();
+    inspector.shapeVertexControls.dispose();
+    inspector.streetNodeControls.dispose();
+    inspector.segmentWidthControls.dispose();
+  }
+  return { inspector, sceneEl, dispose };
+}
+
+function entity(parentEl) {
+  const el = document.createElement('a-entity');
+  parentEl.append(el);
+  el.object3D = new THREE.Group();
+  el.object3D.el = el;
+  el.components = {};
+  el.getObject3D = () => undefined;
+  const nativeSet = el.setAttribute.bind(el);
+  el.setAttribute = (name, value) => {
+    if (name === 'position') {
+      el.object3D.position.set(value.x, value.y, value.z);
+    } else if (name === 'rotation') {
+      el.object3D.rotation.set(
+        THREE.MathUtils.degToRad(value.x),
+        THREE.MathUtils.degToRad(value.y),
+        THREE.MathUtils.degToRad(value.z)
+      );
+    } else nativeSet(name, value);
+  };
+  parentEl.object3D.add(el.object3D);
+  return el;
+}
+
+describe('the easy gizmo as the default transform control', () => {
+  it('is constructed with the viewport and is the starting mode', () => {
+    const { inspector, dispose } = mountViewport();
+    try {
+      expect(inspector.easyGizmoControls).toBeDefined();
+      expect(inspector.transformMode).toBe('easy');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('attaches to a new selection in place of the stock gizmo', () => {
+    const { inspector, sceneEl, dispose } = mountViewport();
+    inspector.cursor = { isPlaying: true };
+    const stockRoot = inspector.sceneHelpers.children.find(
+      (child) => child.isTransformControlsRoot
+    );
+    try {
+      const el = entity(sceneEl);
+      inspector.selectedEntity = el;
+      Events.emit('objectselect', el.object3D);
+      expect(inspector.easyGizmoControls.el).toBe(el);
+      expect(stockRoot.controls.object).toBeUndefined();
+
+      Events.emit('transformmodechange', 'translate');
+      expect(inspector.transformMode).toBe('translate');
+      expect(stockRoot.controls.object).toBe(el.object3D);
+    } finally {
+      dispose();
+    }
+  });
+});
+
 describe('easy gizmo viewport batch synchronization', () => {
   it.each(['batched model', 'group with mixed children'])(
     'updates rendered poses immediately for a %s, including cancellation',
-    async (kind) => {
-      const canvas = document.createElement('canvas');
-      document.body.append(canvas);
-      const sceneEl = document.createElement('a-scene');
-      document.body.append(sceneEl);
-      sceneEl.object3D = new THREE.Scene();
-      sceneEl.canvas = canvas;
-      sceneEl.systems = {};
-      const inspector = {
-        sceneEl,
-        container: canvas,
-        sceneHelpers: new THREE.Scene(),
-        camera: new THREE.PerspectiveCamera(),
-        helpers: {},
-        opened: true,
-        execute: vi.fn()
-      };
-      vi.stubGlobal('AFRAME', { INSPECTOR: inspector });
-      Viewport(inspector);
-      await vi.waitFor(
-        () => expect(inspector.easyGizmoControls).toBeDefined(),
-        {
-          timeout: 10000
-        }
-      );
+    (kind) => {
+      const { inspector, sceneEl, dispose } = mountViewport();
       const controls = inspector.easyGizmoControls;
-
-      function entity(parentEl) {
-        const el = document.createElement('a-entity');
-        parentEl.append(el);
-        el.object3D = new THREE.Group();
-        el.object3D.el = el;
-        el.components = {};
-        el.getObject3D = () => undefined;
-        const nativeSet = el.setAttribute.bind(el);
-        el.setAttribute = (name, value) => {
-          if (name === 'position') {
-            el.object3D.position.set(value.x, value.y, value.z);
-          } else if (name === 'rotation') {
-            el.object3D.rotation.set(
-              THREE.MathUtils.degToRad(value.x),
-              THREE.MathUtils.degToRad(value.y),
-              THREE.MathUtils.degToRad(value.z)
-            );
-          } else nativeSet(name, value);
-        };
-        parentEl.object3D.add(el.object3D);
-        return el;
-      }
 
       const selected = entity(sceneEl);
       const batched = kind === 'batched model' ? selected : entity(selected);
@@ -228,10 +266,7 @@ describe('easy gizmo viewport batch synchronization', () => {
         expectRenderedPose();
         expect(inspector.execute).not.toHaveBeenCalled();
       } finally {
-        controls.dispose();
-        inspector.shapeVertexControls.dispose();
-        inspector.streetNodeControls.dispose();
-        inspector.segmentWidthControls.dispose();
+        dispose();
         batch.dispose();
         geometry.dispose();
         material.dispose();
