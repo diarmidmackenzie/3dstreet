@@ -7,6 +7,7 @@ import {
   elevationAngleDegrees,
   flatArcLift,
   latchByHysteresis,
+  offsetConvexPolygon,
   squareSideMetres
 } from '@/editor/lib/gizmos/easyGizmoMath.js';
 import {
@@ -324,5 +325,58 @@ describe('decideEasyPress', () => {
 
   it('claims a press on a live control', () => {
     expect(decideEasyPress(base)).toBe('claim');
+  });
+});
+
+describe('offsetConvexPolygon', () => {
+  /** Signed distance of point (x, y) from the line through a and b, positive
+   * on the side away from `inside`. */
+  function outwardDistance(ax, ay, bx, by, x, y, inside) {
+    const len = Math.hypot(bx - ax, by - ay);
+    const cross = (px, py) =>
+      ((bx - ax) * (py - ay) - (by - ay) * (px - ax)) / len;
+    return -Math.sign(cross(inside[0], inside[1])) * cross(x, y);
+  }
+
+  for (const [label, square] of [
+    ['anticlockwise', [0, 0, 2, 0, 2, 2, 0, 2]],
+    ['clockwise', [0, 0, 0, 2, 2, 2, 2, 0]]
+  ]) {
+    it(`moves each side by its own offset, ${label}`, () => {
+      const offsets = [0.1, 0.2, -0.3, 0.4];
+      const out = offsetConvexPolygon(square, offsets);
+      for (let i = 0; i < 4; i++) {
+        const j = (i + 1) % 4;
+        // Both ends of offset side i lie on the original side i's line, moved
+        // out by offsets[i].
+        for (const k of [i, j]) {
+          expect(
+            outwardDistance(
+              square[2 * i],
+              square[2 * i + 1],
+              square[2 * j],
+              square[2 * j + 1],
+              out[2 * k],
+              out[2 * k + 1],
+              [1, 1]
+            )
+          ).toBeCloseTo(offsets[i], 12);
+        }
+      }
+    });
+  }
+
+  it('handles a triangle, and uses only the vertices it is told to', () => {
+    const points = [0, 0, 4, 0, 2, 3, 99, 99];
+    const out = offsetConvexPolygon(points, [0.5, 0.5, 0.5, 0], [], 3);
+    expect(out).toHaveLength(6);
+    expect(outwardDistance(0, 0, 4, 0, out[0], out[1], [2, 1])).toBeCloseTo(
+      0.5,
+      12
+    );
+    expect(outwardDistance(2, 3, 0, 0, out[0], out[1], [2, 1])).toBeCloseTo(
+      0.5,
+      12
+    );
   });
 });

@@ -343,6 +343,28 @@ export const ARC_LIFT_MAX_DEG = 30;
  */
 export const ARC_LIFT_SYMMETRIC = true;
 
+/** The yellow parts' edge colour: near-black rather than pure black, so it
+ * reads as an outline and not as a second fill. */
+export const EDGE_COLOR = 0x111111;
+
+/** The edge's width, in CSS pixels: visible against pale ground at a glance,
+ * while staying well inside the thinnest yellow stroke it outlines, a far
+ * landing outline at about 3 px. */
+export const EDGE_PX = 1.5;
+
+/** The edge's opacity as a fraction of its part's. It fades with the part and
+ * stays a little lighter than it, so emphasis is still only an opacity change,
+ * and a dimmed part's edge dims too. */
+export const EDGE_OPACITY_RATIO = 0.8;
+
+/** Caps the edge's offset on a side seen nearly edge-on, where the on-screen
+ * distance per metre of offset tends to zero. */
+export const EDGE_MAX_STRETCH = 4;
+
+/** Below every gizmo fill, so an edge that falls under a neighbouring part is
+ * covered by it rather than drawn across it. */
+export const RENDER_ORDER_EDGE = RENDER_ORDER_BASE - 3;
+
 // --- commit --------------------------------------------------------------
 
 /** Decimal places the gizmo quantises to before writing a transform back.

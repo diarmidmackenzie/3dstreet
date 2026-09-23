@@ -212,6 +212,60 @@ export function computeDodge({ stripClear, gapBelow, gapAbove, latches }) {
 }
 
 /**
+ * Offset each side of a convex polygon along its own outward normal, joining
+ * neighbouring sides with a mitre.
+ *
+ * `points` is flat `[x0, y0, x1, y1, …]` in either winding, and `count` how
+ * many vertices of it to use. Side `i` runs from vertex `i` to `i + 1`, and
+ * `offsets[i]` moves it outward (negative moves it inward). The result is
+ * written into `out`, flat, where vertex `i` is the meeting point of offset
+ * sides `i − 1` and `i`, so side `i` of the result is offset side `i`.
+ */
+export function offsetConvexPolygon(
+  points,
+  offsets,
+  out = [],
+  count = points.length / 2
+) {
+  let area = 0;
+  for (let i = 0; i < count; i++) {
+    const j = (i + 1) % count;
+    area +=
+      points[2 * i] * points[2 * j + 1] - points[2 * j] * points[2 * i + 1];
+  }
+  const turn = area >= 0 ? 1 : -1;
+  for (let i = 0; i < count; i++) {
+    const h = (i + count - 1) % count;
+    const j = (i + 1) % count;
+    const x = points[2 * i];
+    const y = points[2 * i + 1];
+    // Outward normals of the side arriving at this vertex and the one leaving.
+    let ax = turn * (y - points[2 * h + 1]);
+    let ay = turn * (points[2 * h] - x);
+    let bx = turn * (points[2 * j + 1] - y);
+    let by = turn * (x - points[2 * j]);
+    const la = Math.hypot(ax, ay) || 1;
+    const lb = Math.hypot(bx, by) || 1;
+    ax /= la;
+    ay /= la;
+    bx /= lb;
+    by /= lb;
+    // Solve a·p = a·v + dA and b·p = b·v + dB for p = v + q.
+    const dA = offsets[h];
+    const dB = offsets[i];
+    const det = ax * by - ay * bx;
+    if (Math.abs(det) < 1e-9) {
+      out[2 * i] = x + bx * dB;
+      out[2 * i + 1] = y + by * dB;
+    } else {
+      out[2 * i] = x + (dA * by - dB * ay) / det;
+      out[2 * i + 1] = y + (dB * ax - dA * bx) / det;
+    }
+  }
+  return out;
+}
+
+/**
  * How many chevrons span a gap, and the resulting step. The stack divides the
  * gap rather than being laid out from one end, so it reaches the whole way over
  * a short hop and a tall one alike.

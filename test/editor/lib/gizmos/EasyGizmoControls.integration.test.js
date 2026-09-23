@@ -11,6 +11,7 @@ import {
 } from '@/editor/lib/gizmos/easyGizmoMath.js';
 import {
   ARC_FLAT_CLEAR_FRAC,
+  EDGE_OPACITY_RATIO,
   HEAD_LEN_FRAC,
   IDLE_PROBE_INTERVAL_MS,
   HORIZON_CAP_METRES,
@@ -18,6 +19,7 @@ import {
   MOVE_PLATE_ROUND_FRAC,
   OPACITY_ACTION,
   OPACITY_REST,
+  RENDER_ORDER_EDGE,
   RENDER_ORDER_LANDING_FAR,
   RENDER_ORDER_LANDING_NEAR
 } from '@/editor/lib/gizmos/easyGizmoConstants.js';
@@ -1178,7 +1180,9 @@ const SCREEN_H = 800;
 
 /** Every drawn triangle under the given roots, in screen pixels: visible
  * meshes only, pick proxies and invisible pick quads left out, and each
- * geometry's draw range honoured, since the flattened arc is drawn short. */
+ * geometry's draw range honoured, since the flattened arc is drawn short.
+ * Screen-space lines are left out too: their geometry is a template the
+ * shader places, not triangles in the scene. */
 function screenTriangles(roots, camera) {
   const tris = [];
   const v = new THREE.Vector3();
@@ -1186,7 +1190,9 @@ function screenTriangles(roots, camera) {
   for (const root of roots) {
     root.updateMatrixWorld(true);
     root.traverseVisible((node) => {
-      if (!node.isMesh || node.userData.isPickProxy) return;
+      if (!node.isMesh || node.isLineSegments2 || node.userData.isPickProxy) {
+        return;
+      }
       if (node.material && node.material.opacity === 0) return;
       const geometry = node.geometry;
       const position = geometry.attributes.position;
@@ -1624,4 +1630,313 @@ describe('the move square inside a landing outline', () => {
       down.userData.bars[0].renderOrder
     );
   });
+});
+
+describe('the dark edge around the yellow parts', () => {
+  const BASE = 5;
+
+  function edgesOf(controls) {
+    const edges = [];
+    controls.traverse((node) => {
+      if (node.userData.isEdge) edges.push(node);
+    });
+    return edges;
+  }
+
+  /** The object at `BASE` turned by `yawDeg`, the camera 8 m away at
+   * `elevationDeg`, and optionally a surface `surfaceBelow` metres down. */
+  function sceneAt(elevationDeg, { yawDeg = 0, surfaceBelow = null } = {}) {
+    const f = fixture({ base: BASE });
+    f.object.rotation.y = THREE.MathUtils.degToRad(yawDeg);
+    f.object.updateMatrixWorld(true);
+    const a = THREE.MathUtils.degToRad(elevationDeg);
+    if (elevationDeg === 90) f.camera.up.set(0, 0, -1);
+    f.camera.position.set(0, BASE + 8 * Math.sin(a), 8 * Math.cos(a));
+    f.camera.lookAt(0, BASE, 0);
+    f.camera.updateMatrixWorld(true);
+    if (surfaceBelow !== null) f.surface(BASE - surfaceBelow);
+    f.attach();
+    return f;
+  }
+
+  const px = (f, world) => {
+    const v = world.clone().project(f.camera);
+    return { x: ((v.x + 1) / 2) * SCREEN_W, y: ((1 - v.y) / 2) * SCREEN_H };
+  };
+
+  /** Each drawn segment of an edge, as its projected midpoint. */
+  function edgeMidpoints(f, edge) {
+    const array = edge.geometry.attributes.instanceStart.data.array;
+    const mids = [];
+    for (let i = 0; i < edge.geometry.instanceCount; i++) {
+      const a = new THREE.Vector3().fromArray(array, 6 * i);
+      const b = new THREE.Vector3().fromArray(array, 6 * i + 3);
+      const mid = a.add(b).multiplyScalar(0.5).applyMatrix4(edge.matrixWorld);
+      mids.push(px(f, mid));
+    }
+    return mids;
+  }
+
+  /**
+   * For each side of a filled polygon (world corners, in order), the
+   * perpendicular on-screen distance from the nearest edge segment's midpoint
+   * to the line through the side's projected ends — signed, positive outside
+   * the fill.
+   */
+  function sideDistances(f, corners, mids, inward = false) {
+    const pts = corners.map((c) => px(f, c));
+    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+    const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+    return pts.map((p, i) => {
+      const q = pts[(i + 1) % pts.length];
+      const len = Math.hypot(q.x - p.x, q.y - p.y);
+      const signed = (m) =>
+        ((q.x - p.x) * (m.y - p.y) - (q.y - p.y) * (m.x - p.x)) / len;
+      const centreSide = Math.sign(signed({ x: cx, y: cy }));
+      const along = (m) =>
+        ((m.x - p.x) * (q.x - p.x) + (m.y - p.y) * (q.y - p.y)) / len / len;
+      // The segment drawn along this side is the one whose midpoint is
+      // nearest its line, among those beside it.
+      let best = null;
+      for (const m of mids) {
+        const t = along(m);
+        if (t < 0 || t > 1) continue;
+        const d = -centreSide * signed(m) * (inward ? -1 : 1);
+        if (best === null || Math.abs(d) < Math.abs(best)) best = d;
+      }
+      return best;
+    });
+  }
+
+  const worldCorners = (mesh, outline) =>
+    outline.map(([x, y]) => mesh.localToWorld(new THREE.Vector3(x, y, 0)));
+  const QUAD = [
+    [-0.5, -0.5],
+    [0.5, -0.5],
+    [0.5, 0.5],
+    [-0.5, 0.5]
+  ];
+  const TRIANGLE = [
+    [-0.5, -0.5],
+    [0.5, -0.5],
+    [0, 0.5]
+  ];
+
+  function expectOutside(distances) {
+    expect(distances.length).toBeGreaterThan(0);
+    for (const d of distances) {
+      expect(d).not.toBeNull();
+      expect(d).toBeGreaterThanOrEqual(0.73);
+      expect(d).toBeLessThanOrEqual(0.77);
+    }
+  }
+
+  for (const elevationDeg of [14, 20, 45, 90]) {
+    for (const yawDeg of [0, 30, 45]) {
+      it(`sits half its width outside every side of the square and arrowheads, ${elevationDeg}°, yaw ${yawDeg}°`, () => {
+        const f = sceneAt(elevationDeg, { yawDeg });
+        const c = f.controls;
+        expect(c._shallowAmount).toBe(0);
+        expectOutside(
+          sideDistances(
+            f,
+            worldCorners(c.movePlate, QUAD),
+            edgeMidpoints(f, c.plateEdge)
+          )
+        );
+        const zMids = edgeMidpoints(f, c.zHeadsEdge);
+        const xMids = edgeMidpoints(f, c.xHeadsEdge);
+        for (const [head, mids] of [
+          [c.moveHeads[2], zMids],
+          [c.moveHeads[3], zMids],
+          [c.moveHeads[0], xMids],
+          [c.moveHeads[1], xMids]
+        ]) {
+          expectOutside(sideDistances(f, worldCorners(head, TRIANGLE), mids));
+        }
+      });
+    }
+  }
+
+  it('sits half its width outside a landing outline far below, measured at its own depth', () => {
+    const f = sceneAt(90, { surfaceBelow: 5 });
+    const c = f.controls;
+    const down = c.landingDownGroup;
+    expect(down.visible).toBe(true);
+    expect(down.userData.faceAmount).toBe(0);
+    const outline = down.userData.outline;
+    const inner = 0.5 - LANDING_OUTLINE_FRAC;
+    const rect = (h) =>
+      [
+        [-h, -h],
+        [h, -h],
+        [h, h],
+        [-h, h]
+      ].map(([x, z]) => outline.localToWorld(new THREE.Vector3(x, 0, z)));
+    const mids = edgeMidpoints(f, down.userData.edge);
+    expect(mids).toHaveLength(8);
+    expectOutside(sideDistances(f, rect(0.5), mids));
+    expectOutside(sideDistances(f, rect(inner), mids, true));
+  });
+
+  it('outlines a flattened target as one bar once its two bars are too close on screen', () => {
+    // At 60 m the bars' gap is about 3 px, under two edge widths and a pixel;
+    // at 8 m it is about 7 px.
+    for (const [distance, segments] of [
+      [60, 4],
+      [8, 8]
+    ]) {
+      const f = fixture({ base: BASE });
+      const a = THREE.MathUtils.degToRad(5);
+      f.camera.position.set(
+        0,
+        BASE + distance * Math.sin(a),
+        distance * Math.cos(a)
+      );
+      f.camera.lookAt(0, BASE, 0);
+      f.camera.updateMatrixWorld(true);
+      f.attach();
+      f.surface(BASE - 0.4 * f.controls.squareSide);
+      f.controls._refreshSupport();
+      f.frame();
+      const down = f.controls.landingDownGroup;
+      expect(down.visible).toBe(true);
+      expect(down.userData.faceAmount).toBe(1);
+      expect(down.userData.bars[2].visible).toBe(false);
+      expect(down.userData.edge.geometry.instanceCount).toBe(segments);
+    }
+  });
+
+  it('is one of 21 edges, each found in the gizmo, never culled and never picked', () => {
+    const f = sceneAt(45, { surfaceBelow: 1 });
+    const c = f.controls;
+    const edges = edgesOf(c);
+    expect(edges).toHaveLength(21);
+    const noPick = c.landingDownGroup.userData.chevrons[0].raycast;
+    for (const edge of edges) {
+      expect(c.getObjectById(edge.id)).toBe(edge);
+      expect(edge.frustumCulled).toBe(false);
+      expect(edge.raycast).toBe(noPick);
+    }
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(0, 0), f.camera);
+    const hits = raycaster.intersectObject(c, true);
+    expect(hits.some((hit) => hit.object.userData.isEdge)).toBe(false);
+  });
+
+  it('draws below every fill', () => {
+    const f = sceneAt(45, { surfaceBelow: 1 });
+    const fills = new Set([
+      RENDER_ORDER_LANDING_FAR,
+      RENDER_ORDER_LANDING_NEAR
+    ]);
+    const edges = new Set();
+    f.controls.traverse((node) => {
+      if (!node.isMesh) return;
+      (node.userData.isEdge ? edges : fills).add(node.renderOrder);
+    });
+    expect([...edges]).toEqual([RENDER_ORDER_EDGE]);
+    expect(Math.min(...fills)).toBeGreaterThan(RENDER_ORDER_EDGE);
+  });
+
+  it('fades with its part, in every state', () => {
+    const f = sceneAt(45, { surfaceBelow: 1 });
+    const c = f.controls;
+    expect(c.landingDownGroup.visible).toBe(true);
+    const check = () => {
+      expect(c.edgeMaterials.move.opacity).toBeCloseTo(
+        c.materials.move.flat.opacity * EDGE_OPACITY_RATIO,
+        12
+      );
+      expect(c.edgeMaterials.moveFading.opacity).toBeCloseTo(
+        c.materials.moveHeadFading.opacity * EDGE_OPACITY_RATIO,
+        12
+      );
+      expect(c.edgeMaterials.landingDown.opacity).toBeCloseTo(
+        c.materials.landingDown.flat.opacity * EDGE_OPACITY_RATIO,
+        12
+      );
+      for (const chev of c.landingDownGroup.userData.chevrons) {
+        if (!chev.visible) continue;
+        expect(chev.userData.edge.material.opacity).toBeCloseTo(
+          chev.material.opacity * EDGE_OPACITY_RATIO * chev.userData.edgeFacing,
+          12
+        );
+      }
+    };
+    c.highlight(null);
+    check();
+    c.highlight('move');
+    check();
+    f.start();
+    f.frame();
+    check();
+  });
+
+  it('draws no chevron edge seen edge-on from overhead, even after a bare highlight', () => {
+    const f = sceneAt(90, { surfaceBelow: 2 });
+    const c = f.controls;
+    const visible = c.landingDownGroup.userData.chevrons.filter(
+      (ch) => ch.visible
+    );
+    expect(visible.length).toBeGreaterThan(0);
+    for (const chev of visible) expect(chev.userData.edgeFacing).toBe(0);
+    c.highlight();
+    for (const chev of visible) {
+      expect(chev.userData.edge.material.opacity).toBe(0);
+    }
+  });
+
+  it('keeps its geometry through a change of view, and releases everything on disposal', () => {
+    let now = 1000;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      keepsGeometry(
+        () => now,
+        (t) => (now = t)
+      );
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  function keepsGeometry(getNow, setNow) {
+    // Near enough below that the target is seen flattened from 5°.
+    const f = sceneAt(45, { surfaceBelow: 0.3 });
+    const c = f.controls;
+    const before = edgesOf(c).map((edge) => edge.geometry);
+    const settle = () => {
+      for (let i = 0; i < 4; i++) {
+        setNow(getNow() + 300);
+        f.frame();
+      }
+    };
+    // Down to a flattened view, then back: the handle and the landing target
+    // each flatten and unflatten.
+    const a = THREE.MathUtils.degToRad(5);
+    f.camera.position.set(0, BASE + 8 * Math.sin(a), 8 * Math.cos(a));
+    f.camera.lookAt(0, BASE, 0);
+    settle();
+    expect(c._shallowAmount).toBe(1);
+    expect(c.landingDownGroup.userData.faceAmount).toBe(1);
+    const b = THREE.MathUtils.degToRad(45);
+    f.camera.position.set(0, BASE + 8 * Math.sin(b), 8 * Math.cos(b));
+    f.camera.lookAt(0, BASE, 0);
+    settle();
+    expect(c._shallowAmount).toBe(0);
+    expect(c.landingDownGroup.userData.faceAmount).toBe(0);
+    edgesOf(c).forEach((edge, i) => expect(edge.geometry).toBe(before[i]));
+
+    const drawn = [];
+    c.traverse((node) => {
+      if (!node.isMesh) return;
+      drawn.push(node.geometry, node.material);
+    });
+    for (const resource of drawn) expect(c.registry.has(resource)).toBe(true);
+    const spies = c.registry.entries.map((entry) => vi.spyOn(entry, 'dispose'));
+    fixtures.splice(fixtures.indexOf(f), 1);
+    c.dispose();
+    spies.forEach((spy) => expect(spy).toHaveBeenCalled());
+    expect(c.registry.entries).toHaveLength(0);
+  }
 });

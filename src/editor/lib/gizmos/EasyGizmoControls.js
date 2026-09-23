@@ -24,6 +24,8 @@
  * runs first, so window capture is forced rather than chosen. See _addListeners.
  */
 
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { GizmoPointerControls } from './GizmoPointerControls.js';
 import { metresPerPixel } from '../shapeEditRules.js';
 import Events from '../Events.js';
@@ -44,6 +46,7 @@ import {
   elevationAngleDegrees,
   latchByHysteresis,
   lerp,
+  offsetConvexPolygon,
   chevronLayout,
   lastVisiblePointOnSegment,
   squareSideMetres
@@ -53,6 +56,7 @@ import {
   makeArcGeometries,
   makeArcHeadGeometries,
   makeArrowheadGeometry,
+  makeEdgeMaterial,
   makeMaterial
 } from './easyGizmoBuild.js';
 import { shouldCaptureKeyEvent } from '../keyCapture.js';
@@ -75,6 +79,9 @@ import {
   CHEVRON_SPACING_FRAC,
   COLOR_MOVE,
   COLOR_ROTATE,
+  EDGE_MAX_STRETCH,
+  EDGE_OPACITY_RATIO,
+  EDGE_PX,
   HEAD_BASE_FLAT_FRAC,
   HEAD_BASE_FRAC,
   HEAD_LEN_FLAT_FRAC,
@@ -100,6 +107,7 @@ import {
   REGIME_TRANSITION_MS,
   RENDER_ORDER_BASE,
   RENDER_ORDER_CHEVRON,
+  RENDER_ORDER_EDGE,
   RENDER_ORDER_LANDING_FAR,
   RENDER_ORDER_LANDING_NEAR,
   ROTATE_LEVER_FLOOR_FRAC,
@@ -181,6 +189,32 @@ const _qZ = new THREE.Quaternion();
 const _right = new THREE.Vector3();
 const _edgePoint = new THREE.Vector3();
 const _edgeProjection = new THREE.Vector3();
+const _edgeMid = new THREE.Vector3();
+const _edgeAlong = new THREE.Vector3();
+const _edgeNormal = new THREE.Vector3();
+const _edgeU = new THREE.Vector3();
+const _edgeV = new THREE.Vector3();
+const _edgePlane = new THREE.Vector3();
+const _edgeCentroid = new THREE.Vector3();
+const _edgeToParent = new THREE.Matrix4();
+const _edgeWorld = [0, 1, 2, 3].map(() => new THREE.Vector3());
+const _edgeFlat = new Float64Array(8);
+const _edgeOffsets = new Float64Array(4);
+const _edgeOut = new Float64Array(8);
+
+// Outlines in their meshes' own frames: the unit quad every plate and bar is
+// drawn from, and the unit arrowhead.
+const QUAD_OUTLINE = [
+  [-0.5, -0.5],
+  [0.5, -0.5],
+  [0.5, 0.5],
+  [-0.5, 0.5]
+];
+const TRIANGLE_OUTLINE = [
+  [-0.5, -0.5],
+  [0.5, -0.5],
+  [0, 0.5]
+];
 
 /**
  * Orient a flat arrowhead: apex along `dir`, lying in the plane whose normal is
@@ -395,8 +429,56 @@ class EasyGizmoControls extends GizmoPointerControls {
     this.landingUpGroup = this._buildLandingTarget('landingUp');
     this.add(this.landingDownGroup);
     this.add(this.landingUpGroup);
+    this._buildEdges();
 
     this.visible = false;
+  }
+
+  /**
+   * A thin dark edge just outside every yellow part, so each stays legible on
+   * pale ground. The cyan arc has none.
+   *
+   * Each edge is a screen-space line with its geometry allocated once, at the
+   * most segments it will ever need, and rewritten in place each frame. Its
+   * bounds are never recomputed after that, so it is never frustum-culled.
+   */
+  _buildEdges() {
+    const reg = this.registry;
+    this.edgeMaterials = {
+      move: reg.add(makeEdgeMaterial()),
+      moveFading: reg.add(makeEdgeMaterial()),
+      landingDown: reg.add(makeEdgeMaterial()),
+      landingUp: reg.add(makeEdgeMaterial())
+    };
+    this.plateEdge = this._edge(this.moveGroup, this.edgeMaterials.move, 4);
+    // The ±Z pair survives the flattened presentation; the ±X pair fades.
+    this.zHeadsEdge = this._edge(this.moveGroup, this.edgeMaterials.move, 6);
+    this.xHeadsEdge = this._edge(
+      this.moveGroup,
+      this.edgeMaterials.moveFading,
+      6
+    );
+    [this.landingDownGroup, this.landingUpGroup].forEach((group) => {
+      const ud = group.userData;
+      // An outer and an inner rectangle, or the two flattened bars.
+      ud.edge = this._edge(group, this.edgeMaterials[ud.gizmoAxis], 8);
+      ud.chevrons.forEach((chev) => {
+        chev.userData.edge = this._edge(chev, reg.add(makeEdgeMaterial()), 3);
+        chev.userData.edgeFacing = 1;
+      });
+    });
+  }
+
+  _edge(parent, material, maxSegments) {
+    const geometry = this.registry.add(new LineSegmentsGeometry());
+    geometry.setPositions(new Float32Array(maxSegments * 6));
+    const edge = new LineSegments2(geometry, material);
+    edge.frustumCulled = false;
+    edge.raycast = neverPicked;
+    edge.renderOrder = RENDER_ORDER_EDGE;
+    edge.userData.isEdge = true;
+    parent.add(edge);
+    return edge;
   }
 
   _buildMoveHandle() {
@@ -1129,16 +1211,23 @@ class EasyGizmoControls extends GizmoPointerControls {
   highlight(axis) {
     const flat = this._shallowAmount;
     const groups = [
-      { group: this.moveGroup, slot: this.materials.move, flatness: flat },
+      {
+        group: this.moveGroup,
+        slot: this.materials.move,
+        edge: this.edgeMaterials.move,
+        flatness: flat
+      },
       { group: this.arcGroup, slot: this.materials.rotate, flatness: flat },
       {
         group: this.landingDownGroup,
         slot: this.materials.landingDown,
+        edge: this.edgeMaterials.landingDown,
         flatness: this.landingDownGroup.userData.faceAmount
       },
       {
         group: this.landingUpGroup,
         slot: this.materials.landingUp,
+        edge: this.edgeMaterials.landingUp,
         flatness: this.landingUpGroup.userData.faceAmount
       }
     ];
@@ -1148,7 +1237,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     const someActive =
       mouse && groups.some((g) => g.group.userData.gizmoAxis === activeAxis);
 
-    groups.forEach(({ group, slot, flatness }) => {
+    groups.forEach(({ group, slot, edge, flatness }) => {
       const active = group.userData.gizmoAxis === activeAxis;
       let level = OPACITY_REST;
       if (active && this.isDragging) level = OPACITY_ACTION;
@@ -1157,8 +1246,11 @@ class EasyGizmoControls extends GizmoPointerControls {
       const opacity = Math.min(level + OPACITY_FLAT_BOOST * flatness, 1);
       if (slot.flat) slot.flat.opacity = opacity;
       if (slot.solid) slot.solid.opacity = opacity;
+      if (edge) edge.opacity = opacity * EDGE_OPACITY_RATIO;
       if (group === this.moveGroup) {
         this.materials.moveHeadFading.opacity = opacity * (1 - flat);
+        this.edgeMaterials.moveFading.opacity =
+          this.materials.moveHeadFading.opacity * EDGE_OPACITY_RATIO;
       }
     });
 
@@ -1181,6 +1273,8 @@ class EasyGizmoControls extends GizmoPointerControls {
       group.userData.chevrons.forEach((chev) => {
         const fade = chev.userData.fade === undefined ? 1 : chev.userData.fade;
         chev.material.opacity = Math.min(base, 1) * fade;
+        chev.userData.edge.material.opacity =
+          chev.material.opacity * EDGE_OPACITY_RATIO * chev.userData.edgeFacing;
       });
     });
   }
@@ -1195,11 +1289,225 @@ class EasyGizmoControls extends GizmoPointerControls {
    */
   updateMatrixWorld(force) {
     this._checkEditorClosedEdge();
-    if (this.el && this.object && this.object.parent && this._inspectorOpen()) {
+    const laidOut =
+      this.el && this.object && this.object.parent && this._inspectorOpen();
+    if (laidOut) {
       this._layoutFrame();
       if (!this._frameSystem) this._advanceBeforeRender();
     }
     super.updateMatrixWorld(force);
+    // After the traversal, so every part's world matrix is this frame's.
+    if (laidOut) this._layoutEdges();
+  }
+
+  // --- edges ------------------------------------------------------------
+
+  _layoutEdges() {
+    const h = this.domElement ? this.domElement.clientHeight : 0;
+    if (!h || !(this.squareSide > 0)) return;
+    this._edgeScreenH = h;
+    this._edgeScreenW = h * (this.camera.aspect || 1);
+    this.camera.updateMatrixWorld();
+
+    this._edgeBegin(this.plateEdge);
+    this._edgeAddMesh(this.plateEdge, this.movePlate, QUAD_OUTLINE);
+    this._edgeEnd(this.plateEdge);
+
+    this._edgeBegin(this.zHeadsEdge);
+    this._edgeAddMesh(this.zHeadsEdge, this.moveHeads[2], TRIANGLE_OUTLINE);
+    this._edgeAddMesh(this.zHeadsEdge, this.moveHeads[3], TRIANGLE_OUTLINE);
+    this._edgeEnd(this.zHeadsEdge);
+
+    this.xHeadsEdge.visible = this.moveHeads[0].visible;
+    if (this.xHeadsEdge.visible) {
+      this._edgeBegin(this.xHeadsEdge);
+      this._edgeAddMesh(this.xHeadsEdge, this.moveHeads[0], TRIANGLE_OUTLINE);
+      this._edgeAddMesh(this.xHeadsEdge, this.moveHeads[1], TRIANGLE_OUTLINE);
+      this._edgeEnd(this.xHeadsEdge);
+    }
+
+    this._layoutLandingEdge(this.landingDownGroup);
+    this._layoutLandingEdge(this.landingUpGroup);
+  }
+
+  _layoutLandingEdge(group) {
+    if (!group.visible) return;
+    const ud = group.userData;
+    const outline = ud.outline;
+    const edge = ud.edge;
+    const stroke = LANDING_OUTLINE_FRAC;
+    const halfH = ud.outlineHeight / 2;
+    this._edgeBegin(edge);
+    if (ud.bars[2].visible) {
+      // Outside the outer rectangle, and inside the inner one.
+      this._edgeAddRect(edge, outline, 0.5, -halfH, halfH, 1);
+      const innerX = 0.5 - ud.sideStroke;
+      this._edgeAddRect(
+        edge,
+        outline,
+        innerX,
+        stroke - halfH,
+        halfH - stroke,
+        -1
+      );
+    } else {
+      // Flat: two bars. Once they are too close on screen for an edge to fit
+      // between them, the pair is outlined as one.
+      _edgePoint.set(0, 0, halfH - stroke).applyMatrix4(outline.matrixWorld);
+      _edgeMid.set(0, 0, stroke - halfH).applyMatrix4(outline.matrixWorld);
+      this._edgeScreen(_edgePoint, _edgeAlong);
+      this._edgeScreen(_edgeMid, _edgeNormal);
+      const gapPx = Math.hypot(
+        _edgeAlong.x - _edgeNormal.x,
+        _edgeAlong.y - _edgeNormal.y
+      );
+      if (gapPx < 2 * EDGE_PX + 1) {
+        this._edgeAddRect(edge, outline, 0.5, -halfH, halfH, 1);
+      } else {
+        this._edgeAddRect(edge, outline, 0.5, halfH - stroke, halfH, 1);
+        this._edgeAddRect(edge, outline, 0.5, -halfH, stroke - halfH, 1);
+      }
+    }
+    this._edgeEnd(edge);
+
+    for (const chev of ud.chevrons) {
+      if (!chev.visible) continue;
+      const chevEdge = chev.userData.edge;
+      this._edgeBegin(chevEdge);
+      this._edgeAddMesh(chevEdge, chev, TRIANGLE_OUTLINE);
+      this._edgeEnd(chevEdge);
+    }
+  }
+
+  _edgeBegin(edge) {
+    _edgeToParent.copy(edge.parent.matrixWorld).invert();
+    edge.userData.segments = 0;
+  }
+
+  _edgeEnd(edge) {
+    const geometry = edge.geometry;
+    geometry.instanceCount = edge.userData.segments;
+    geometry.attributes.instanceStart.data.needsUpdate = true;
+  }
+
+  /** A mesh's outline, given in its own frame (z = 0), edged outward. */
+  _edgeAddMesh(edge, mesh, outline) {
+    for (let i = 0; i < outline.length; i++) {
+      _edgeWorld[i]
+        .set(outline[i][0], outline[i][1], 0)
+        .applyMatrix4(mesh.matrixWorld);
+    }
+    this._edgeAddPolygon(edge, outline.length, 1);
+  }
+
+  /** A rectangle in a landing outline's own frame, which lies in its XZ plane:
+   * ±halfX across and `z0`…`z1` deep. `sign` −1 edges it on the inside. */
+  _edgeAddRect(edge, outline, halfX, z0, z1, sign) {
+    _edgeWorld[0].set(-halfX, 0, z0);
+    _edgeWorld[1].set(halfX, 0, z0);
+    _edgeWorld[2].set(halfX, 0, z1);
+    _edgeWorld[3].set(-halfX, 0, z1);
+    for (let i = 0; i < 4; i++) _edgeWorld[i].applyMatrix4(outline.matrixWorld);
+    this._edgeAddPolygon(edge, 4, sign);
+  }
+
+  /**
+   * Append the offset outline of the convex polygon in `_edgeWorld`.
+   *
+   * Offset along the in-plane normal, sized so the line sits half its width
+   * from the side measured perpendicular to the side on screen. Measuring
+   * along the projected normal instead under-measures on any side oblique to
+   * the view. Each side is measured at its own depth.
+   */
+  _edgeAddPolygon(edge, count, sign) {
+    const a = _edgeWorld[0];
+    _edgeU.subVectors(_edgeWorld[1], a);
+    _edgeV.subVectors(_edgeWorld[2], a);
+    _edgePlane.crossVectors(_edgeU, _edgeV);
+    if (_edgePlane.lengthSq() < 1e-20 || _edgeU.lengthSq() < 1e-20) return;
+    _edgePlane.normalize();
+    _edgeU.normalize();
+    _edgeV.crossVectors(_edgePlane, _edgeU);
+
+    _edgeCentroid.set(0, 0, 0);
+    for (let i = 0; i < count; i++) _edgeCentroid.add(_edgeWorld[i]);
+    _edgeCentroid.multiplyScalar(1 / count);
+
+    const eps = this.squareSide * 1e-3;
+    for (let i = 0; i < count; i++) {
+      const p = _edgeWorld[i];
+      const q = _edgeWorld[(i + 1) % count];
+      _edgeMid.subVectors(p, a);
+      _edgeFlat[2 * i] = _edgeMid.dot(_edgeU);
+      _edgeFlat[2 * i + 1] = _edgeMid.dot(_edgeV);
+      _edgeMid.addVectors(p, q).multiplyScalar(0.5);
+      _edgeAlong.subVectors(q, p).normalize();
+      _edgeNormal.crossVectors(_edgeAlong, _edgePlane);
+      _edgePoint.subVectors(_edgeMid, _edgeCentroid);
+      if (_edgeNormal.dot(_edgePoint) < 0) _edgeNormal.negate();
+      _edgeOffsets[i] = sign * this._edgeOffsetAt(eps);
+    }
+    offsetConvexPolygon(_edgeFlat, _edgeOffsets, _edgeOut, count);
+
+    const array = edge.geometry.attributes.instanceStart.data.array;
+    let k = edge.userData.segments * 6;
+    for (let i = 0; i <= count; i++) {
+      const j = i % count;
+      _edgePoint
+        .copy(a)
+        .addScaledVector(_edgeU, _edgeOut[2 * j])
+        .addScaledVector(_edgeV, _edgeOut[2 * j + 1])
+        .applyMatrix4(_edgeToParent);
+      // Each vertex ends one segment and starts the next.
+      if (i > 0) {
+        array[k++] = _edgePoint.x;
+        array[k++] = _edgePoint.y;
+        array[k++] = _edgePoint.z;
+      }
+      if (i < count) {
+        array[k++] = _edgePoint.x;
+        array[k++] = _edgePoint.y;
+        array[k++] = _edgePoint.z;
+      }
+    }
+    edge.userData.segments += count;
+  }
+
+  /**
+   * The in-plane offset, in metres, that puts the edge line's centre half its
+   * width from the side on screen, for the side at `_edgeMid` running along
+   * `_edgeAlong` with outward normal `_edgeNormal`. From the screen Jacobian at
+   * that point, so it is exact for the side's own depth and angle.
+   */
+  _edgeOffsetAt(eps) {
+    const m = this._edgeScreen(_edgeMid, _edgeProjection);
+    const mx = m.x;
+    const my = m.y;
+    _edgePoint.copy(_edgeMid).addScaledVector(_edgeAlong, eps);
+    const e = this._edgeScreen(_edgePoint, _edgeProjection);
+    const ex = (e.x - mx) / eps;
+    const ey = (e.y - my) / eps;
+    _edgePoint.copy(_edgeMid).addScaledVector(_edgeNormal, eps);
+    const n = this._edgeScreen(_edgePoint, _edgeProjection);
+    const nx = (n.x - mx) / eps;
+    const ny = (n.y - my) / eps;
+    const alongPx = Math.hypot(ex, ey);
+    const across = alongPx > 0 ? Math.abs(nx * ey - ny * ex) / alongPx : 0;
+    const perMetre = Math.max(across, Math.hypot(nx, ny) / EDGE_MAX_STRETCH);
+    return perMetre > 0 && Number.isFinite(perMetre)
+      ? EDGE_PX / 2 / perMetre
+      : 0;
+  }
+
+  /** A world point in CSS pixels on the canvas, written into `out` (x, y). */
+  _edgeScreen(point, out) {
+    out.copy(point).project(this.camera);
+    out.set(
+      ((out.x + 1) / 2) * this._edgeScreenW,
+      ((1 - out.y) / 2) * this._edgeScreenH,
+      0
+    );
+    return out;
   }
 
   _advanceBeforeRender() {
@@ -1792,6 +2100,8 @@ class EasyGizmoControls extends GizmoPointerControls {
     bars[3].position.set(-(1 - sideStroke) / 2, 0, 0);
     bars[3].scale.set(sideStroke, side, 1);
     bars[2].visible = bars[3].visible = f < 0.99;
+    ud.outlineHeight = h;
+    ud.sideStroke = sideStroke;
     // The clickable area is the rectangle, not the square it came from.
     ud.pick.scale.set(1, h, 1);
 
@@ -1863,6 +2173,10 @@ class EasyGizmoControls extends GizmoPointerControls {
     this.cameraRight(_right);
     _hd.crossVectors(_right, UP).applyAxisAngle(UP, -yaw);
     _v.set(0, dir, 0);
+    // The same plane normal in world space, for how face-on each chevron's
+    // edge is seen.
+    _edgeNormal.crossVectors(_right, UP);
+    this.camera.getWorldPosition(_camPos);
     let lastChevron = null;
     let nearestTarget = Infinity;
     for (let i = 0; i < chevrons.length; i++) {
@@ -1890,6 +2204,16 @@ class EasyGizmoControls extends GizmoPointerControls {
       // render black under a lit material.
       aimArrowhead(chev, _v, _hd);
       chev.userData.fade = fade;
+      // An edge-on chevron, seen from overhead, would be all edge.
+      _edgeMid
+        .set(group.position.x, targetY - dir * u, group.position.z)
+        .sub(_camPos)
+        .normalize();
+      chev.userData.edgeFacing = THREE.MathUtils.smoothstep(
+        Math.abs(_edgeMid.dot(_edgeNormal)),
+        0.2,
+        0.5
+      );
     }
     // Keep the final direction mark visible when the landing button is outside
     // the viewport. It remains on the vertical connection and cannot be picked.
