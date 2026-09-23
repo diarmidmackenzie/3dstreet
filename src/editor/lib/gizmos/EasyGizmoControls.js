@@ -85,6 +85,7 @@ import {
   LANDING_HIDE_GAP_METRES,
   LANDING_OUTLINE_FRAC,
   LANDING_SHOW_GAP_METRES,
+  MOVE_PLATE_ROUND_FRAC,
   OPACITY_ACTION,
   OPACITY_DIM,
   OPACITY_FLAT_BOOST,
@@ -99,6 +100,8 @@ import {
   REGIME_TRANSITION_MS,
   RENDER_ORDER_BASE,
   RENDER_ORDER_CHEVRON,
+  RENDER_ORDER_LANDING_FAR,
+  RENDER_ORDER_LANDING_NEAR,
   ROTATE_LEVER_FLOOR_FRAC,
   ROTATE_LEVER_PROBE_RAD,
   STRIP_LEN_FRAC,
@@ -569,7 +572,7 @@ class EasyGizmoControls extends GizmoPointerControls {
       const strip = this._mesh(
         this.quadGeometry,
         material,
-        RENDER_ORDER_BASE + 6
+        RENDER_ORDER_LANDING_NEAR
       );
       strip.rotation.x = -Math.PI / 2;
       outline.add(strip);
@@ -578,7 +581,7 @@ class EasyGizmoControls extends GizmoPointerControls {
     const pick = this._mesh(
       this.quadGeometry,
       this.materials.pick,
-      RENDER_ORDER_BASE + 6
+      RENDER_ORDER_LANDING_NEAR
     );
     pick.rotation.x = -Math.PI / 2;
     pick.visible = false;
@@ -1538,12 +1541,19 @@ class EasyGizmoControls extends GizmoPointerControls {
 
     const stripLen = S * STRIP_LEN_FRAC;
     const stripNarrow = S * STRIP_NARROW_FRAC;
-    const halfZ = lerp(S / 2, stripLen / 2, t);
+    // Inset inside a landing outline of side S, so the outline reads as a
+    // separate ring around it.
+    const plate = S * MOVE_PLATE_ROUND_FRAC;
+    const halfZ = lerp(plate / 2, stripLen / 2, t);
     // Lerped with the plate rather than pinned: the ±X heads fade across the
     // change while the plate narrows underneath them, so a fixed half-width
     // would leave them floating clear of the strip's edge mid-transition.
-    const halfX = lerp(S / 2, stripNarrow / 2, t);
-    this.movePlate.scale.set(lerp(S, stripLen, t), lerp(S, stripNarrow, t), 1);
+    const halfX = lerp(plate / 2, stripNarrow / 2, t);
+    this.movePlate.scale.set(
+      lerp(plate, stripLen, t),
+      lerp(plate, stripNarrow, t),
+      1
+    );
 
     const headBase = S * lerp(HEAD_BASE_FRAC, HEAD_BASE_FLAT_FRAC, t);
     const headLen = S * lerp(HEAD_LEN_FRAC, HEAD_LEN_FLAT_FRAC, t);
@@ -1746,6 +1756,19 @@ class EasyGizmoControls extends GizmoPointerControls {
     }
     const f = this._advanceAnim(ud.anim, ud.faceAmount, now);
     ud.faceAmount = f;
+
+    // Drawn over the handle only from the side a press would reach it first.
+    this.camera.getWorldPosition(_camPos);
+    const cameraSide = Math.sign(_camPos.y - baseY);
+    const order =
+      f < 0.5 && Math.sign(targetY - baseY) === cameraSide
+        ? RENDER_ORDER_LANDING_NEAR
+        : RENDER_ORDER_LANDING_FAR;
+    if (ud.renderOrder !== order) {
+      ud.renderOrder = order;
+      for (const bar of ud.bars) bar.renderOrder = order;
+      ud.pick.renderOrder = order;
+    }
 
     // The outline, laid out for a rectangle one wide and `h` tall. At h = 1
     // this is exactly the square, and the stroke is the same on all four bars

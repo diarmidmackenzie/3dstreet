@@ -148,6 +148,15 @@ export const LANDING_HIDE_GAP_METRES = 0.05;
 /** Outline stroke of a landing target, as a fraction of its side. */
 export const LANDING_OUTLINE_FRAC = 0.08;
 
+/**
+ * The move square's side in the round presentation, as a fraction of S.
+ * Chosen. The landing outline's interior is 0.84 S (`1 − 2 ·
+ * LANDING_OUTLINE_FRAC`), so 0.79 leaves an empty band of 0.025 S each side,
+ * which is what keeps an outline close underneath from reading as part of a
+ * bigger square; 0.84 closes it.
+ */
+export const MOVE_PLATE_ROUND_FRAC = 0.79;
+
 /** Height of a landing outline once it has flattened, as a fraction of its
  * width. Matches the move strip's narrowness so the two flattened controls read
  * as the same visual language. */
@@ -290,6 +299,17 @@ export const STRIP_LEN_FRAC = 2.2;
 export const STRIP_NARROW_FRAC = 0.22;
 
 // --- edges and derived dodge extents -------------------------------------
+
+/**
+ * Draw orders for a landing target, chosen per frame so that where a target
+ * and the move handle overlap on screen, the one drawn on top is the one a
+ * press there would hit. A target on the camera's side of the handle's plane is
+ * nearer along any ray through both, so it is drawn over the handle and the
+ * arc; one on the far side is drawn beneath them. A flattened target stands in
+ * the handle's own plane, where the arc is nearer, so it is always beneath.
+ */
+export const RENDER_ORDER_LANDING_NEAR = RENDER_ORDER_BASE + 6;
+export const RENDER_ORDER_LANDING_FAR = RENDER_ORDER_BASE - 1;
 
 /**
  * The part of the flattened arc's parallax that its world clearance already

@@ -11,10 +11,15 @@ import {
 } from '@/editor/lib/gizmos/easyGizmoMath.js';
 import {
   ARC_FLAT_CLEAR_FRAC,
+  HEAD_LEN_FRAC,
   IDLE_PROBE_INTERVAL_MS,
   HORIZON_CAP_METRES,
+  LANDING_OUTLINE_FRAC,
+  MOVE_PLATE_ROUND_FRAC,
   OPACITY_ACTION,
-  OPACITY_REST
+  OPACITY_REST,
+  RENDER_ORDER_LANDING_FAR,
+  RENDER_ORDER_LANDING_NEAR
 } from '@/editor/lib/gizmos/easyGizmoConstants.js';
 
 const fixtures = [];
@@ -1442,5 +1447,181 @@ describe('the flattened arc on screen', () => {
     f.frame();
     expect(f.controls.landingDownGroup.visible).toBe(false);
     expect(f.controls._dodge.flipArc).toBe(false);
+  });
+});
+
+describe('the move square inside a landing outline', () => {
+  const BASE = 5;
+
+  /** A fixture whose camera sits at `position`, aimed at the object's base;
+   * `up` is only needed straight overhead. */
+  function sceneFrom(position, surfaces = [], { up } = {}) {
+    const f = fixture({ base: BASE });
+    if (up) f.camera.up.copy(up);
+    f.camera.position.copy(position);
+    f.camera.lookAt(0, BASE, 0);
+    f.camera.updateMatrixWorld(true);
+    for (const [y, kind] of surfaces) f.surface(y, { kind });
+    f.attach();
+    return f;
+  }
+
+  const overhead = (surfaces) =>
+    sceneFrom(new THREE.Vector3(0, BASE + 8, 0), surfaces, {
+      up: new THREE.Vector3(0, 0, -1)
+    });
+
+  function toScreen(f, world) {
+    const v = world.clone().project(f.camera);
+    return new THREE.Vector2(
+      ((v.x + 1) / 2) * SCREEN_W,
+      ((1 - v.y) / 2) * SCREEN_H
+    );
+  }
+
+  /** What a press over this world point would take. */
+  function pickThrough(f, world) {
+    const v = world.clone().project(f.camera);
+    f.controls.raycaster.setFromCamera(new THREE.Vector2(v.x, v.y), f.camera);
+    return f.controls.pickAxis();
+  }
+
+  const outlinePoint = (group, x, z) =>
+    group.userData.outline.localToWorld(new THREE.Vector3(x, 0, z));
+
+  it('insets the square and keeps its arrowheads on its edges', () => {
+    const f = overhead([[BASE - 0.15, 'segment']]);
+    const c = f.controls;
+    expect(c._shallowAmount).toBe(0);
+    const S = c.squareSide;
+    expect(c.movePlate.scale.x).toBeCloseTo(S * MOVE_PLATE_ROUND_FRAC, 9);
+    for (const head of c.moveHeads.slice(2)) {
+      const innerEdge = Math.abs(head.position.z) - (S * HEAD_LEN_FRAC) / 2;
+      expect(innerEdge).toBeCloseTo((S * MOVE_PLATE_ROUND_FRAC) / 2, 9);
+    }
+  });
+
+  it('keeps a visible gap between the square and an outline just below it, with no edge drawn', () => {
+    const f = overhead([[BASE - 0.15, 'segment']]);
+    const c = f.controls;
+    expect(c.landingDownGroup.visible).toBe(true);
+    expect(c.landingDownGroup.userData.faceAmount).toBe(0);
+    const centre = toScreen(f, new THREE.Vector3(0, BASE, 0));
+    const plateEdge = c.movePlate.localToWorld(new THREE.Vector3(0.5, 0, 0));
+    const outward = plateEdge.clone().setY(0).normalize();
+    const ringInner = new THREE.Vector3()
+      .copy(outward)
+      .multiplyScalar((0.5 - LANDING_OUTLINE_FRAC) * c.squareSide)
+      .setY(c.landingDownY);
+    const gap =
+      toScreen(f, ringInner).distanceTo(centre) -
+      toScreen(f, plateEdge).distanceTo(centre);
+    expect(gap).toBeGreaterThanOrEqual(1.0);
+  });
+
+  it('draws a target below under the handle and one above over it, from above', () => {
+    const a = THREE.MathUtils.degToRad(60);
+    const f = sceneFrom(
+      new THREE.Vector3(0, BASE + 8 * Math.sin(a), 8 * Math.cos(a)),
+      [
+        [BASE - 2, 'segment'],
+        [BASE + 2, 'import']
+      ]
+    );
+    const { landingDownGroup: down, landingUpGroup: up } = f.controls;
+    expect(down.visible).toBe(true);
+    expect(up.visible).toBe(true);
+    expect(down.userData.faceAmount).toBe(0);
+    expect(up.userData.faceAmount).toBe(0);
+    for (const mesh of [...down.userData.bars, down.userData.pick]) {
+      expect(mesh.renderOrder).toBe(RENDER_ORDER_LANDING_FAR);
+    }
+    for (const mesh of [...up.userData.bars, up.userData.pick]) {
+      expect(mesh.renderOrder).toBe(RENDER_ORDER_LANDING_NEAR);
+    }
+    expect(RENDER_ORDER_LANDING_FAR).toBeLessThan(
+      f.controls.movePlate.renderOrder
+    );
+    expect(RENDER_ORDER_LANDING_NEAR).toBeGreaterThan(
+      f.controls.arcHalfA.renderOrder
+    );
+  });
+
+  it('draws the target over the handle from below its surface, where a press takes it', () => {
+    // Camera 3 m below a support surface, the object 0.3 m above it.
+    const f = fixture({ base: 0.3 });
+    f.camera.position.set(0, -3, 4);
+    f.camera.lookAt(0, 0.3, 0);
+    f.camera.updateMatrixWorld(true);
+    f.surface(0);
+    f.attach();
+    const c = f.controls;
+    const down = c.landingDownGroup;
+    expect(down.visible).toBe(true);
+    expect(down.userData.faceAmount).toBe(0);
+    for (const bar of down.userData.bars) {
+      expect(bar.renderOrder).toBe(RENDER_ORDER_LANDING_NEAR);
+    }
+    // The plate's edge farthest from the camera.
+    const farEdge = [
+      [0.5, 0],
+      [-0.5, 0],
+      [0, 0.5],
+      [0, -0.5]
+    ]
+      .map(([x, y]) => c.movePlate.localToWorld(new THREE.Vector3(x, y, 0)))
+      .reduce((a, b) => (b.z < a.z ? b : a));
+    expect(pickThrough(f, farEdge)).toBe('landingDown');
+    expect(down.userData.bars[0].renderOrder).toBeGreaterThan(
+      c.movePlate.renderOrder
+    );
+  });
+
+  it('draws the square over the outline where the outline has passed under it, overhead', () => {
+    const f = overhead([[BASE - 3, 'segment']]);
+    const c = f.controls;
+    const down = c.landingDownGroup;
+    expect(down.visible).toBe(true);
+    const stroke = LANDING_OUTLINE_FRAC;
+    const onRing = outlinePoint(down, 0.5 - stroke / 2, 0);
+    expect(pickThrough(f, onRing)).toBe('move');
+    expect(c.movePlate.renderOrder).toBeGreaterThan(
+      down.userData.bars[0].renderOrder
+    );
+  });
+
+  it('lets a press take the outline where it shows outside the square, overhead', () => {
+    const f = overhead([[BASE - 0.4, 'segment']]);
+    const c = f.controls;
+    const down = c.landingDownGroup;
+    expect(down.visible).toBe(true);
+    const stroke = LANDING_OUTLINE_FRAC;
+    const corner = outlinePoint(down, 0.5 - stroke / 2, 0.5 - stroke / 2);
+    expect(pickThrough(f, corner)).toBe('landingDown');
+    const head = c.moveHeads[2];
+    expect(pickThrough(f, head.getWorldPosition(new THREE.Vector3()))).toBe(
+      'move'
+    );
+    expect(head.renderOrder).toBeGreaterThan(down.userData.bars[0].renderOrder);
+  });
+
+  it('gives the near arrowhead the press and the top of the drawing, at 45 degrees', () => {
+    const a = THREE.MathUtils.degToRad(45);
+    const f = sceneFrom(
+      new THREE.Vector3(0, BASE + 8 * Math.sin(a), 8 * Math.cos(a)),
+      [[BASE - 0.2, 'segment']]
+    );
+    const c = f.controls;
+    const down = c.landingDownGroup;
+    expect(down.visible).toBe(true);
+    expect(down.userData.faceAmount).toBe(0);
+    const near = c.moveHeads
+      .filter((head) => head.visible)
+      .map((head) => head.getWorldPosition(new THREE.Vector3()))
+      .reduce((a, b) => (b.z > a.z ? b : a));
+    expect(pickThrough(f, near)).toBe('move');
+    expect(c.moveHeads[0].renderOrder).toBeGreaterThan(
+      down.userData.bars[0].renderOrder
+    );
   });
 });
