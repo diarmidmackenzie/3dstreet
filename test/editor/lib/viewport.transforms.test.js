@@ -161,6 +161,16 @@ function entity(parentEl) {
       );
     } else nativeSet(name, value);
   };
+  const nativeGet = el.getAttribute.bind(el);
+  el.getAttribute = (name) => {
+    if (name === 'position') return el.object3D.position.clone();
+    if (name === 'rotation') {
+      const d = THREE.MathUtils.radToDeg;
+      const { x, y, z } = el.object3D.rotation;
+      return { x: d(x), y: d(y), z: d(z) };
+    }
+    return nativeGet(name);
+  };
   parentEl.object3D.add(el.object3D);
   return el;
 }
@@ -192,6 +202,97 @@ describe('the easy gizmo as the default transform control', () => {
       Events.emit('transformmodechange', 'translate');
       expect(inspector.transformMode).toBe('translate');
       expect(stockRoot.controls.object).toBe(el.object3D);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe('the properties panel during an easy gizmo drag', () => {
+  function startDrag() {
+    const { inspector, sceneEl, dispose } = mountViewport();
+    const controls = inspector.easyGizmoControls;
+    const el = entity(sceneEl);
+    inspector.selectedEntity = el;
+    controls.el = el;
+    controls.object = el.object3D;
+    controls.dragEl = el;
+    controls.dragObject = el.object3D;
+    controls.dragSnapshot = { position: '0 0 0', rotation: '0 0 0' };
+    controls.isDragging = true;
+    controls.axis = 'move';
+    const updates = [];
+    Events.on('entityupdate', (detail) => {
+      if (detail.entity === el) updates.push(detail);
+    });
+    return { inspector, sceneEl, controls, el, updates, dispose };
+  }
+
+  it('reports each step of a move or rotation, without a command', () => {
+    const { inspector, controls, el, updates, dispose } = startDrag();
+    try {
+      el.object3D.position.set(1, 0, 2);
+      controls.dispatchEvent({ type: 'objectChange' });
+      el.object3D.position.set(2, 0, 3);
+      controls.dispatchEvent({ type: 'objectChange' });
+      controls.axis = 'rotate';
+      el.object3D.rotation.y = Math.PI / 2;
+      controls.dispatchEvent({ type: 'objectChange' });
+      expect(
+        updates.map(({ component, value }) => ({ component, value }))
+      ).toEqual([
+        { component: 'position', value: '1 0 2' },
+        { component: 'position', value: '2 0 3' },
+        { component: 'rotation', value: '0 90 0' }
+      ]);
+      expect(inspector.execute).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('commits the whole drag once, as one command', () => {
+    const { inspector, controls, el, dispose } = startDrag();
+    try {
+      el.object3D.position.set(1, 0, 2);
+      controls.dispatchEvent({ type: 'objectChange' });
+      el.object3D.position.set(2, 0, 3);
+      controls.dispatchEvent({ type: 'objectChange' });
+      controls.endGesture('pointerup');
+      expect(inspector.execute).toHaveBeenCalledTimes(1);
+      expect(inspector.execute.mock.calls[0][0]).toBe('multi');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('shows the restored pose once when the drag is cancelled', () => {
+    const { inspector, controls, el, updates, dispose } = startDrag();
+    try {
+      el.object3D.position.set(4, 0, 5);
+      controls.dispatchEvent({ type: 'objectChange' });
+      updates.length = 0;
+      controls.endGesture('escape');
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({
+        component: 'position',
+        value: '0 0 0'
+      });
+      expect(inspector.execute).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('says nothing about the dragged entity once the selection has moved on', () => {
+    const { inspector, sceneEl, controls, el, updates, dispose } = startDrag();
+    try {
+      el.object3D.position.set(4, 0, 5);
+      updates.length = 0;
+      inspector.selectedEntity = entity(sceneEl);
+      controls.detach();
+      expect(updates).toEqual([]);
+      expect(el.object3D.position.x).toBe(0);
     } finally {
       dispose();
     }

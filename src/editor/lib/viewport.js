@@ -816,6 +816,23 @@ export function Viewport(inspector) {
       syncBatchedSubtree(object.el);
       selectionBox.setFromObject(object);
       updateHelpers(object);
+      // Keeps the properties panel in step with the drag. An event rather than
+      // a command: the whole gesture is committed once, as one undo step, on
+      // release. Only for the selected entity, because a detach caused by a
+      // new selection restores the old one after the selection has moved on,
+      // and its panel is being replaced.
+      if (easyGizmoControls.el !== inspector.selectedEntity) return;
+      const rotating = easyGizmoControls.axis === 'rotate';
+      const d = THREE.MathUtils.radToDeg;
+      Events.emit('entityupdate', {
+        entity: object.el,
+        component: rotating ? 'rotation' : 'position',
+        value: rotating
+          ? `${d(object.rotation.x)} ${d(object.rotation.y)} ${d(
+              object.rotation.z
+            )}`
+          : `${object.position.x} ${object.position.y} ${object.position.z}`
+      });
     });
     // The scene's hover box tracks the gizmo's own hover state rather than
     // being cleared once on mouseDown: hovering a control and moving away
