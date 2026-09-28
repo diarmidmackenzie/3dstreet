@@ -2,6 +2,7 @@ import Events from './Events';
 import { isStreetLevelNav } from './nav-experimental/flag.js';
 import { captureNavDiscovery } from './navAnalytics.js';
 import { resolveClickSelection } from './cascadingSelection.js';
+import { trace, describeEl } from './gizmos/easyGizmoTrace.js'; // TEMP: diagnostics, not for merge
 import useStore from '@/store';
 
 // OSM click-to-upgrade (#1930): an empty-space click in osm3d mode probes
@@ -188,6 +189,12 @@ export function initRaycaster(inspector) {
     const up = upEvt
       ? new THREE.Vector2(upEvt.clientX, upEvt.clientY)
       : onUpPosition;
+    // TEMP diagnostics (not for merge)
+    trace('raycaster:handleClick', () => ({
+      travelPx: onDownPosition.distanceTo(up),
+      willSelect: onDownPosition.distanceTo(up) <= CLICK_MAX_DRAG_PX,
+      intersected: describeEl(getIntersectedEl())
+    }));
     if (onDownPosition.distanceTo(up) <= CLICK_MAX_DRAG_PX) {
       const intersectedEl = getIntersectedEl();
       // Feature-discovery: count a viewport click that actually selects an
@@ -241,6 +248,15 @@ export function initRaycaster(inspector) {
   function handleEmptySpaceClick(event) {
     const gizmoCaptured = inspector.gizmoCapturedPress;
     inspector.gizmoCapturedPress = false;
+    // TEMP diagnostics (not for merge)
+    trace('raycaster:emptySpaceMouseUp', () => ({
+      gizmoCaptured,
+      button: event.button,
+      detail: event.detail,
+      travelPx: onDownPosition.distanceTo(onUpPosition),
+      intersected: describeEl(getIntersectedEl()),
+      selected: describeEl(inspector.selectedEntity)
+    }));
     // Left button only, and only the first click of a multi-click — same
     // rule as handleClick (the dblclick handler owns the second click).
     // Right/middle mouseups (context menu, orbit/pan) are not "clicks".
