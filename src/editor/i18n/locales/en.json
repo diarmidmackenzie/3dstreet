@@ -2159,6 +2159,9 @@
   "sceneGraph.emptyStateMessage": {
     "defaultMessage": "Add a new layer to get started."
   },
+  "sceneGraph.groupItem": {
+    "defaultMessage": "Group"
+  },
   "sceneGraph.newGroup": {
     "defaultMessage": "New group"
   },

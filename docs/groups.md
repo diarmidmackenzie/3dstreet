@@ -1,9 +1,10 @@
 # User groups
 
 A user group is an entity the user makes with the layer panel's **New group**
-button to hold other items, so they can be moved, turned and scaled together
-and edited in isolation. The code is in `src/editor/lib/groups/`; the
-`group-center` component is in `src/aframe-components/`.
+button, or with **Group** on a layer row's menu, to hold other items, so they
+can be moved, turned and scaled together and edited in isolation. The code is
+in `src/editor/lib/groups/`; the `group-center` component is in
+`src/aframe-components/`.
 
 ## What a group is
 
@@ -14,6 +15,8 @@ and edited in isolation. The code is in `src/editor/lib/groups/`; the
   `groupModel.js` holds the one rule for that, used by the layer panel's drop
   zones, by placement and by the command guard: `canReparent` reads it from an
   entity, and `isGroupableItem` from the data of an item about to be created.
+  `canWrapInGroup` applies the same rule, through `keepsItsParent`, to an item
+  and a new group made beside it.
   Items the editor keeps under a fixed parent (street segments, generated
   content, shapes, the Starting View) never enter a group. Nor does a new
   360° panorama, which surrounds the whole scene: it carries the saved
@@ -226,12 +229,23 @@ real `BatchedMesh`.
   (`isSystemItem`: the Starting View) get no notice, and creating or moving
   one leaves the selection, and so the open group, as it was.
 - **New group** goes where the user is looking (`newGroupPlacement`). With an
-  item selected it goes directly above that item, in the same parent, with its
-  origin at the item's position, so the item can be dropped straight in; a
-  selection inside a street or intersection stands for the whole street. With
-  nothing selected (or a fixed layer) it goes first in the open group, at its
-  center, or first at the top level, at the origin. The create command's
-  `beforeEl` keeps that place across undo and redo.
+  item selected that could go into a group (`groupAnchor`) it goes directly
+  above that item, in the same parent, so the item can be dropped straight in:
+  its origin is at the item's position, or at the center of a selected group,
+  which is where the user sees that group (a hidden group measures empty, so
+  that is its origin). A selection inside a street or intersection stands for
+  the whole street. With nothing such selected (nothing at all, a fixed layer,
+  a shape, the Starting View or the panorama) it goes first in the open group,
+  at its center, or first at the top level, at the origin. The create
+  command's `beforeEl` keeps that place across undo and redo.
+- **Group**, on a layer row's menu (`wrapInGroup`), makes the same group for
+  that row and moves into it the item New group would have gone beside: the
+  row's item, or the whole street for a row inside a street or intersection.
+  It is one undo step: a `multi` of the create and the move, with the group's
+  id chosen first so the move can name it. The new group is selected but not
+  opened, and its row is expanded in the panel; undo selects the right-clicked
+  row again. The entry is disabled for a row that cannot go into a group, and
+  for a row whose move is still settling.
 - **Paste.** An item copied from inside a group, or pasted into an open group,
   keeps its world pose. Every other paste keeps the copied local pose.
 
@@ -248,6 +262,12 @@ under the new parent with the same id.
   was and the user is told; its components have already been removed, so its
   model may not show until the scene is saved and reloaded.
 - A row whose move is still settling cannot be dragged.
+- A batch that selects once at the end passes `noSelectEntity`, as it does to
+  a create: the move then leaves the selection alone, clearing it only if it
+  was on the element the move took out. A move that fails when it runs still
+  lets its batch carry on undoing and redoing the other members, since nothing
+  moved; one that fails when undone stops the batch's undo there, because the
+  item is still in its new parent.
 - **Drop levels.** Where groups end, one gap between two rows can mean several
   places: after the last member, after its group, after the group around that.
   The pointer's horizontal position picks one, each level owning the band

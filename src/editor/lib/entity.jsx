@@ -8,7 +8,11 @@ import { faBullseye, faCubes } from '@fortawesome/free-solid-svg-icons';
 import { captureFocusPose } from './focusPose.js';
 import { DEFAULT_FOV_DEGREES } from '../../tested/scene-camera-pose.js';
 import { reseededGeneratorAttributes } from '../../tested/generator-seeds.js';
-import { innermostOpenGroup } from './groups/groupPlacement.js';
+import {
+  groupAnchor,
+  innermostOpenGroup,
+  newGroupDefinition
+} from './groups/groupPlacement.js';
 import { isUserGroup } from './groups/groupModel.js';
 import {
   GeospatialIcon,
@@ -188,6 +192,65 @@ export function reorderEntityRelativeTo(entity, targetEntity, insertionMode) {
     parentEl: targetParent.id,
     indexInParent: insertionMode === 'after' ? targetIndex + 1 : targetIndex
   });
+}
+
+/**
+ * Put `entity` into a new user group made in its place, as one undo step. A
+ * row inside a street or intersection stands for the whole street (see
+ * groupAnchor); an item that cannot go into a group is left alone.
+ *
+ * The new group is selected and left closed, so the user stays where they
+ * were: selecting a member would open it. Undo selects `entity` again, or the
+ * item that stood for it if `entity` is gone. Callers are driven by the
+ * selection (a right-click selects the row first), so the new group, made
+ * beside the row's item or the street it stands for, is already inside any
+ * open group.
+ *
+ * @param {Element} entity The item to group.
+ * @param {object} [options]
+ * @param {function(Element)} [options.onGrouped] Called with the new group
+ *   after the first run and after each redo.
+ */
+export function wrapInGroup(entity, { onGrouped } = {}) {
+  const anchor = groupAnchor(entity);
+  if (!anchor) return;
+  if (!entity.id) entity.id = createUniqueId();
+  if (!anchor.id) anchor.id = createUniqueId();
+  const { id: entityId } = entity;
+  const { id: anchorId } = anchor;
+  const groupId = createUniqueId();
+  AFRAME.INSPECTOR.execute(
+    'multi',
+    [
+      [
+        'entitycreate',
+        { ...newGroupDefinition(anchor, { id: groupId }), noSelectEntity: true }
+      ],
+      [
+        'entityreparent',
+        {
+          entity: anchor,
+          parentEl: groupId,
+          indexInParent: 0,
+          noSelectEntity: true
+        }
+      ]
+    ],
+    'Group',
+    () => {
+      // The batch calls back after the first run, each undo and each redo,
+      // and each run rebuilds the elements, so look them up by id.
+      const group = document.getElementById(groupId);
+      if (group?.isConnected) {
+        AFRAME.INSPECTOR.selectEntity(group);
+        onGrouped?.(group);
+        return;
+      }
+      const reselect =
+        document.getElementById(entityId) || document.getElementById(anchorId);
+      if (reselect?.isConnected) AFRAME.INSPECTOR.selectEntity(reselect);
+    }
+  );
 }
 
 /**

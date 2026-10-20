@@ -719,6 +719,7 @@
   "savingModal.saving": "Salvando",
   "sceneGraph.addLayerButton": "Adicionar Camada",
   "sceneGraph.emptyStateMessage": "Adicione uma nova camada para começar.",
+  "sceneGraph.groupItem": "Agrupar",
   "sceneGraph.newGroup": "Novo grupo",
   "sceneGraph.tabAssets": "Recursos",
   "sceneGraph.tabGeospatial": "Geoespacial",

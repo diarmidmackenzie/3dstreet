@@ -13,15 +13,15 @@ import { FolderPlusIcon, Plus20Circle } from '@shared/icons';
 import {
   createUniqueId,
   getEntityDisplayName,
-  reorderEntityRelativeTo
+  reorderEntityRelativeTo,
+  wrapInGroup
 } from '../../lib/entity';
-import {
-  USER_GROUP_CLASS,
-  canReparent,
-  isUserGroup
-} from '../../lib/groups/groupModel.js';
+import { canReparent, isUserGroup } from '../../lib/groups/groupModel.js';
 import { isReparentInFlight } from '../../lib/commands/EntityReparentCommand.js';
-import { newGroupPlacement } from '../../lib/groups/groupPlacement.js';
+import {
+  groupAnchor,
+  newGroupDefinition
+} from '../../lib/groups/groupPlacement.js';
 import {
   groupGapLevels,
   isNoOpDrop,
@@ -459,6 +459,26 @@ class SceneGraph extends React.Component {
     this.setState({ insertionInfo: info });
   };
 
+  // Can the row's context menu put this item into a new group? Not while the
+  // item, or the street it stands for, is still being moved.
+  canGroupRow = (entity) => {
+    if (isReparentInFlight(entity.id)) return false;
+    const anchor = groupAnchor(entity);
+    return !!anchor && !isReparentInFlight(anchor.id);
+  };
+
+  // Put a row's item into a new group, and show the group expanded, as a drop
+  // into a group expands it.
+  groupEntity = (entity) => {
+    if (!this.canGroupRow(entity)) return;
+    wrapInGroup(entity, {
+      onGrouped: (groupEl) => {
+        this.state.expandedElements.set(groupEl, true);
+        this.setState({ expandedElements: this.state.expandedElements });
+      }
+    });
+  };
+
   setRenamingEntity = (entity) => {
     this.setState({ renamingEntity: entity });
   };
@@ -668,24 +688,12 @@ class SceneGraph extends React.Component {
   };
 
   createGroup = () => {
-    // Not 'custom-group': the Add Layer panel finds its own street-prop
-    // holders by that class.
-    const definition = {
-      class: USER_GROUP_CLASS,
-      'data-layer-name': 'Group',
-      components: { position: '0 0 0' }
-    };
-    // Above the selected item, or first in the list (see newGroupPlacement).
-    const { parentEl, beforeEl, position } = newGroupPlacement(
-      this.props.selectedEntity
+    // A new group above the selected item, or first in the list (see
+    // newGroupDefinition).
+    AFRAME.INSPECTOR.execute(
+      'entitycreate',
+      newGroupDefinition(this.props.selectedEntity)
     );
-    if (parentEl) {
-      definition.parentEl = parentEl;
-      definition.beforeEl = beforeEl;
-      definition.requireParent = true;
-      definition.components.position = position;
-    }
-    AFRAME.INSPECTOR.execute('entitycreate', definition);
   };
 
   getEntityById = (id) => document.getElementById(id);
@@ -739,6 +747,8 @@ class SceneGraph extends React.Component {
           // Context menu rename state
           renamingEntity={this.state.renamingEntity}
           setRenamingEntity={this.setRenamingEntity}
+          canGroup={this.canGroupRow(entityOption.entity)}
+          onGroupEntity={this.groupEntity}
         />
       );
       children.push(renderedEntity);

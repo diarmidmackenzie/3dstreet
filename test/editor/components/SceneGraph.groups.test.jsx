@@ -43,13 +43,14 @@ function makeEntity(parent, { id, name, cls, attrs = {} } = {}) {
 }
 
 // The editor's execute: the real guard, then the real History running the
-// real command. Every call is recorded, refused or not.
-function composedExecute(type, payload) {
+// real command, handed the caller's callback as index.jsx does. Every call is
+// recorded, refused or not.
+function composedExecute(type, payload, name, callback) {
   executed.push([type, payload]);
   const refusal = refuseGuardedTransform(type, payload);
   if (refusal) return refusal;
   const Cmd = commandsByType.get(type);
-  editor.history.execute(new Cmd(editor, payload));
+  editor.history.execute(new Cmd(editor, payload, callback), name);
   return undefined;
 }
 
@@ -938,6 +939,70 @@ describe('the new-group button', () => {
     const created = open.querySelector(':scope > .user-group');
     expect(created).not.toBe(null);
     expect(root.querySelectorAll(':scope > .user-group')).toHaveLength(1);
+  });
+});
+
+describe("a row's Group item", () => {
+  it('puts the right-clicked item into a new group made in its place, as one batch (fails if the menu, the row or the panel do not pass the action on)', async () => {
+    const before = makeEntity(root, { id: 'before', name: 'Before' });
+    const item = makeEntity(root, { id: 'item', name: 'Item' });
+    // Another row is selected, so the action must take the row it was opened on.
+    await renderPanel({ 'sceneGraph.groupItem': 'Group' }, before);
+
+    fireEvent.contextMenu(screen.getByText('Item'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Group' }));
+
+    const batches = executed.filter(([type]) => type === 'multi');
+    expect(batches).toHaveLength(1);
+    const [[createType, create], [moveType, move]] = batches[0][1];
+    expect(createType).toBe('entitycreate');
+    expect(create.class).toBe('user-group');
+    expect(create.beforeEl).toBe(item);
+    expect(moveType).toBe('entityreparent');
+    expect(move.entity).toBe(item);
+    expect(move.parentEl).toBe(create.id);
+  });
+
+  it('shows the new group expanded once the item is inside it (fails if the panel does not expand it)', async () => {
+    makeEntity(root, { id: 'item', name: 'Item' });
+    await renderPanel({ 'sceneGraph.groupItem': 'Group' });
+
+    fireEvent.contextMenu(screen.getByText('Item'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Group' }));
+    const [, [[, create]]] = executed.find(([type]) => type === 'multi');
+    // What A-Frame gives the new group as it loads.
+    const group = document.getElementById(create.id);
+    group.isEntity = true;
+    group.object3D = new THREE.Group();
+    group.object3D.el = group;
+    group.components = {};
+    group.pause = () => {};
+    root.object3D.add(group.object3D);
+    act(() => {
+      group.dispatchEvent(new Event('loaded'));
+    });
+    await finishMove('item');
+
+    expect(document.getElementById('item').parentNode).toBe(group);
+    expect(editor.selectEntity).toHaveBeenLastCalledWith(group);
+    // A collapsed group would hide its member's row.
+    expect(screen.getByText('Item')).toBeTruthy();
+  });
+
+  it('is disabled on a shape row (fails if a shape is offered Group)', async () => {
+    const shape = makeEntity(root, {
+      id: 'shape',
+      name: 'Shape',
+      attrs: { shape: '' }
+    });
+    await renderPanel({ 'sceneGraph.groupItem': 'Group' }, shape);
+
+    fireEvent.contextMenu(screen.getByText('Shape'));
+    const item = await screen.findByRole('menuitem', { name: 'Group' });
+
+    expect(item.getAttribute('aria-disabled')).toBe('true');
+    // An open menu blocks pointer events on the page; close it.
+    fireEvent.keyDown(item, { key: 'Escape' });
   });
 });
 

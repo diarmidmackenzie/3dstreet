@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 import { ContextMenu } from 'radix-ui';
-import { FormattedMessage } from 'react-intl';
+import { FormattedMessage, defineMessages } from 'react-intl';
 import posthog from 'posthog-js';
 import Events from '../../lib/Events';
 import {
@@ -12,6 +12,13 @@ import { canRenameEntity, cloneEntity, removeEntity } from '../../lib/entity';
 import { editShortcuts } from '../../lib/editShortcuts.js';
 import { commonMessages } from '@/editor/i18n/commonMessages';
 
+const messages = defineMessages({
+  group: {
+    id: 'sceneGraph.groupItem',
+    defaultMessage: 'Group'
+  }
+});
+
 /**
  * Right-click context menu for a scene graph row (issue #1947). Wraps the row
  * as the Radix ContextMenu trigger; opening it selects the entity first (via
@@ -20,7 +27,14 @@ import { commonMessages } from '@/editor/i18n/commonMessages';
  * menu — target the row that was right-clicked. Reuses the AppMenu's Menubar
  * classes so both menus look identical, keyboard hints included.
  */
-const EntityContextMenu = ({ entity, onSelectEntity, onRename, children }) => {
+const EntityContextMenu = ({
+  entity,
+  onSelectEntity,
+  onRename,
+  canGroup,
+  onGroup,
+  children
+}) => {
   // Cloud-asset entities rename like any other row: the rename writes a
   // per-instance data-layer-name, which EntityLabel shows in place of the
   // shared Firestore asset name (#2000).
@@ -105,6 +119,18 @@ const EntityContextMenu = ({ entity, onSelectEntity, onRename, children }) => {
           </ContextMenu.Item>
           <ContextMenu.Item
             className="MenubarItem"
+            // Shown but disabled for an item that cannot go into a group, or
+            // one whose move is still settling.
+            disabled={!canGroup}
+            onSelect={() => {
+              onGroup();
+              capture('group_clicked');
+            }}
+          >
+            <FormattedMessage {...messages.group} />
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            className="MenubarItem"
             onSelect={() => {
               // No confirm prompt: like Cut, the removal is undoable.
               removeEntity(entity, true);
@@ -124,6 +150,8 @@ EntityContextMenu.propTypes = {
   entity: PropTypes.object.isRequired,
   onSelectEntity: PropTypes.func.isRequired,
   onRename: PropTypes.func.isRequired,
+  canGroup: PropTypes.bool.isRequired,
+  onGroup: PropTypes.func.isRequired,
   children: PropTypes.node.isRequired
 };
 

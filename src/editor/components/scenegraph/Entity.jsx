@@ -100,7 +100,10 @@ class Entity extends React.Component {
     isMoving: PropTypes.bool,
     // Context menu rename state (owned by SceneGraph)
     renamingEntity: PropTypes.object,
-    setRenamingEntity: PropTypes.func
+    setRenamingEntity: PropTypes.func,
+    // Context menu Group (owned by SceneGraph)
+    canGroup: PropTypes.bool,
+    onGroupEntity: PropTypes.func
   };
 
   onClick = () => this.props.selectEntity(this.props.entity);
@@ -424,6 +427,8 @@ class Entity extends React.Component {
         entity={entity}
         onSelectEntity={this.onContextMenu}
         onRename={() => this.props.setRenamingEntity(entity)}
+        canGroup={!!this.props.canGroup}
+        onGroup={() => this.props.onGroupEntity?.(entity)}
       >
         <div
           className={className}

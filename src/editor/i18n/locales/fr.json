@@ -719,6 +719,7 @@
   "savingModal.saving": "Enregistrement",
   "sceneGraph.addLayerButton": "Ajouter un calque",
   "sceneGraph.emptyStateMessage": "Ajoutez un nouveau calque pour commencer.",
+  "sceneGraph.groupItem": "Grouper",
   "sceneGraph.newGroup": "Nouveau groupe",
   "sceneGraph.tabAssets": "Actifs",
   "sceneGraph.tabGeospatial": "Géospatial",

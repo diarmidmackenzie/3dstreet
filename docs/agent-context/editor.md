@@ -78,7 +78,8 @@ by, real geometry at random (#1988, #2009).
 
 **User groups:** entities with the `user-group` class, which users make, open
 for editing (`inspector.groupScope`) and move items into. Which parent an item
-may take is decided only by `canReparent` in `src/editor/lib/groups/groupModel.js`;
+may take is decided only by `canReparent` in `src/editor/lib/groups/groupModel.js`
+(`canWrapInGroup`, for a new group beside an item, applies the same rule);
 per-frame work that must see final transforms registers in the editor frame
 window (`src/editor/lib/editorFrame.js`). Doc is [docs/groups.md](../groups.md).
 

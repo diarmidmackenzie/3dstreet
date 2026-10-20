@@ -47,6 +47,9 @@ export class EntityReparentCommand extends Command {
 
       this.entityId = entity.id;
       this.newParentEl = payload.parentEl; // this is the id
+      // A batch that selects once at the end (wrapping an item in a new
+      // group) keeps the selection where it is, as entitycreate does.
+      this.noSelectEntity = !!payload.noSelectEntity;
       this.newIndexInParent = payload.indexInParent;
 
       // Store current state for undo
@@ -96,10 +99,11 @@ export class EntityReparentCommand extends Command {
   // Replace `entity` with a copy built from `data` inside `parent`, before
   // `beforeEl`. Everything that can be checked is checked before the original
   // leaves the scene; if building the copy still throws, the original goes
-  // back where it was, attributes intact, and the user is told.
-  replace(entity, data, parent, beforeEl, nextCommandCallback) {
+  // back where it was, attributes intact, and the user is told. `during`
+  // names the step ('execute' or 'undo') for fail().
+  replace(entity, data, parent, beforeEl, nextCommandCallback, during) {
     if (!data) {
-      this.fail(null);
+      this.fail(null, during);
       return undefined;
     }
     const oldParent = entity.parentNode;
@@ -117,7 +121,7 @@ export class EntityReparentCommand extends Command {
       recreated.parentNode?.removeChild(recreated);
       oldParent.insertBefore(entity, oldNext);
       inFlight.delete(this.entityId);
-      this.fail(error);
+      this.fail(error, during);
       return undefined;
     }
 
@@ -130,7 +134,15 @@ export class EntityReparentCommand extends Command {
         Events.emit('entityremoved', entity);
         Events.emit('entitycreated', recreated);
 
-        this.editor.selectEntity(recreated);
+        if (!this.noSelectEntity) {
+          this.editor.selectEntity(recreated);
+        } else if (
+          this.editor.selectedEntity &&
+          entity.contains(this.editor.selectedEntity)
+        ) {
+          // Never leave a removed element, or one inside it, selected.
+          this.editor.selectEntity(null);
+        }
 
         nextCommandCallback?.(recreated);
       },
@@ -139,15 +151,24 @@ export class EntityReparentCommand extends Command {
     return recreated;
   }
 
-  fail(error) {
-    // Nothing moved, so undo and redo have nothing to do.
+  // `during` is 'execute' or 'undo'. The item is left in the parent it had
+  // when that step began: the old one after a failed execute, the new one
+  // after a failed undo. No later step moves it again; execute and undo only
+  // decide whether a batch may carry on.
+  fail(error, during) {
     this.failed = true;
+    this.failedDuring = during;
     if (error) console.error('Moving the entity failed', error);
     globalThis.STREET?.notify?.errorMessage(groupMessage('reparentFailed'));
   }
 
   execute(nextCommandCallback) {
-    if (this.failed) return undefined;
+    // Nothing to redo. Let a batch carry on, so its later members and its
+    // final callback still run.
+    if (this.failed) {
+      nextCommandCallback?.(null);
+      return undefined;
+    }
     const entity = document.getElementById(this.entityId);
     if (!entity) return undefined;
 
@@ -168,7 +189,7 @@ export class EntityReparentCommand extends Command {
       this.newParentEl !== this.oldParentEl &&
       !this.applyLocalPose(entityData, newParent)
     ) {
-      this.fail(null);
+      this.fail(null, 'execute');
       return undefined;
     }
 
@@ -195,12 +216,20 @@ export class EntityReparentCommand extends Command {
       entityData,
       newParent,
       beforeEl,
-      nextCommandCallback
+      nextCommandCallback,
+      'execute'
     );
   }
 
   undo(nextCommandCallback) {
-    if (this.failed) return undefined;
+    if (this.failed) {
+      // A move that failed when run left everything where it was, so a batch
+      // may undo its other members. One that failed when undone left the item
+      // in its new parent, which an earlier member may have made: undoing that
+      // member would take the item with it, so the batch stops here.
+      if (this.failedDuring === 'execute') nextCommandCallback?.(null);
+      return undefined;
+    }
     const entity = document.getElementById(this.entityId);
     if (!entity) return undefined;
 
@@ -228,7 +257,8 @@ export class EntityReparentCommand extends Command {
       JSON.parse(JSON.stringify(this.entityData ?? null)),
       oldParent,
       beforeEl,
-      nextCommandCallback
+      nextCommandCallback,
+      'undo'
     );
   }
 }
